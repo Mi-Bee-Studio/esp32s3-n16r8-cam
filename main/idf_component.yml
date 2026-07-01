@@ -1,0 +1,11 @@
+## IDF Component Manager Manifest File
+dependencies:
+  ## Required IDF version
+  idf:
+    version: ">=4.1.0"
+  espressif/esp32-camera: "^2.1.6"
+  espressif/mdns: "*"
+  espp/rtsp: "1.1.3"
+  espressif/quirc: "*"
+  espressif/esp-dl: "^3.3.6"
+  espressif/human_face_detect: "*"
