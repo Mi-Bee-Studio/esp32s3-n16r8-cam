@@ -1,651 +1,207 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
-<title>MiBee Cam</title>
-<style>
-:root {
-  --bg: #0b0b14;
-  --surface: #14142a;
-  --surface-2: #1c1c38;
-  --surface-3: #25254a;
-  --accent: #4fc3f7;
-  --accent-glow: rgba(79,195,247,0.18);
-  --success: #66bb6a;
-  --danger: #ef5350;
-  --warning: #ffa726;
-  --text: #e8e8f0;
-  --text-dim: #7a7a96;
-  --text-muted: #555570;
-  --radius: 10px;
-  --shadow: 0 8px 32px rgba(0,0,0,0.55);
-}
-*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
-html,body{height:100%;overflow:hidden}
-body{
-  background:var(--bg);color:var(--text);
-  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,sans-serif;
-  display:flex;flex-direction:column;font-size:14px;line-height:1.4;
-  -webkit-font-smoothing:antialiased;
-}
-
-/* --- Status Bar --- */
-#status-bar{
-  flex-shrink:0;display:flex;align-items:center;gap:6px;
-  padding:6px 12px;height:42px;
-  background:var(--surface);border-bottom:1px solid rgba(255,255,255,0.04);
-  overflow-x:auto;white-space:nowrap;-webkit-overflow-scrolling:touch;
-}
-#status-bar::-webkit-scrollbar{display:none}
-.badge{
-  display:inline-flex;align-items:center;gap:4px;
-  padding:2px 10px;border-radius:20px;
-  font-size:11px;font-weight:500;letter-spacing:0.3px;
-  background:var(--surface-2);color:var(--text-dim);
-  flex-shrink:0;
-}
-.badge .dot{
-  width:6px;height:6px;border-radius:50%;display:inline-block;
-}
-.badge .dot.green{background:var(--success)}
-.badge .dot.red{background:var(--danger)}
-.badge .dot.blue{background:var(--accent)}
-.badge .ico{opacity:0.6;font-size:12px}
-#badge-stream .dot{animation:pulse 2s infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
-
-/* --- Stream Container --- */
-#stream-container{
-  flex:1;position:relative;overflow:hidden;
-  display:flex;align-items:center;justify-content:center;
-  background:#050508;min-height:0;
-}
-#stream{
-  position:absolute;top:0;left:0;width:100%;height:100%;
-  object-fit:contain;
-}
-#canvas-overlay{
-  position:absolute;top:0;left:0;width:100%;height:100%;
-  pointer-events:none;z-index:2;
-}
-#stream-status{
-  position:absolute;z-index:3;
-  font-size:13px;color:var(--text-dim);
-  background:rgba(0,0,0,0.7);padding:8px 18px;border-radius:20px;
-  transition:opacity 0.5s;pointer-events:none;
-}
-#stream-status.hidden{opacity:0}
-
-/* --- Controls Drawer --- */
-#controls{
-  flex-shrink:0;background:var(--surface);
-  border-top:1px solid rgba(255,255,255,0.05);
-  transition:transform 0.3s ease;
-  max-height:55vh;overflow-y:auto;
-}
-#controls.collapsed{max-height:44px;overflow:hidden}
-#controls::-webkit-scrollbar{width:4px}
-#controls::-webkit-scrollbar-track{background:transparent}
-#controls::-webkit-scrollbar-thumb{background:var(--surface-3);border-radius:2px}
-
-#drawer-toggle{
-  display:flex;align-items:center;justify-content:center;gap:8px;
-  width:100%;padding:10px;cursor:pointer;border:none;
-  background:var(--surface);color:var(--text);font-size:13px;font-weight:600;
-  letter-spacing:0.5px;text-transform:uppercase;transition:background 0.2s;
-  -webkit-tap-highlight-color:transparent;
-}
-#drawer-toggle:hover{background:var(--surface-2)}
-#drawer-toggle .arrow{transition:transform 0.3s;font-size:10px}
-#controls:not(.collapsed) #drawer-toggle .arrow{transform:rotate(180deg)}
-
-#drawer-body{padding:8px 16px 16px}
-.section{margin-bottom:16px}
-.section:last-child{margin-bottom:4px}
-.section-title{
-  font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;
-  color:var(--text-muted);margin-bottom:8px;
-}
-
-/* --- Toggle Chips --- */
-.chip-row{display:flex;gap:8px;flex-wrap:wrap}
-.chip{
-  display:inline-flex;align-items:center;gap:6px;
-  padding:7px 14px;border-radius:20px;cursor:pointer;user-select:none;
-  font-size:13px;font-weight:500;border:1px solid var(--surface-3);
-  background:var(--surface-2);color:var(--text-dim);
-  transition:all 0.2s;-webkit-tap-highlight-color:transparent;
-}
-.chip.active{
-  background:var(--accent-glow);border-color:var(--accent);
-  color:var(--accent);box-shadow:0 0 12px var(--accent-glow);
-}
-.chip input{display:none}
-
-/* --- Slider --- */
-.slider-row{display:flex;align-items:center;gap:12px}
-.slider-row input[type=range]{
-  flex:1;-webkit-appearance:none;appearance:none;
-  height:4px;border-radius:2px;
-  background:var(--surface-3);outline:none;
-}
-.slider-row input[type=range]::-webkit-slider-thumb{
-  -webkit-appearance:none;appearance:none;
-  width:18px;height:18px;border-radius:50%;
-  background:var(--accent);cursor:pointer;
-  box-shadow:0 0 8px var(--accent-glow);
-  transition:transform 0.15s;
-}
-.slider-row input[type=range]::-webkit-slider-thumb:hover{transform:scale(1.15)}
-.slider-row input[type=range]::-moz-range-thumb{
-  width:18px;height:18px;border-radius:50%;border:none;
-  background:var(--accent);cursor:pointer;
-}
-#led-value{
-  min-width:36px;text-align:right;
-  font-size:14px;font-weight:600;color:var(--accent);
-  font-variant-numeric:tabular-nums;
-}
-#led-off-btn{
-  padding:4px 12px;border-radius:6px;border:1px solid var(--surface-3);
-  background:var(--surface-2);color:var(--text-dim);cursor:pointer;
-  font-size:12px;transition:all 0.2s;
-}
-#led-off-btn:hover{background:var(--surface-3);color:var(--danger);border-color:var(--danger)}
-
-/* --- WiFi Form --- */
-.form-group{margin-bottom:10px}
-.form-group label{
-  display:block;font-size:11px;font-weight:600;
-  color:var(--text-muted);margin-bottom:4px;letter-spacing:0.3px;
-}
-.form-group input{
-  width:100%;padding:9px 12px;border-radius:8px;border:1px solid var(--surface-3);
-  background:var(--surface-2);color:var(--text);font-size:14px;
-  outline:none;transition:border-color 0.2s;
-}
-.form-group input:focus{border-color:var(--accent)}
-.form-group input::placeholder{color:var(--text-muted)}
-.btn-primary{
-  width:100%;padding:10px;border-radius:8px;border:none;
-  background:var(--accent);color:#0b0b14;
-  font-size:14px;font-weight:700;cursor:pointer;
-  transition:all 0.2s;-webkit-tap-highlight-color:transparent;
-}
-.btn-primary:hover{filter:brightness(1.1)}
-.btn-primary:active{transform:scale(0.98)}
-
-/* --- Toast --- */
-#toast{
-  position:fixed;bottom:calc(55vh + 20px);left:50%;transform:translateX(-50%);
-  z-index:100;padding:8px 20px;border-radius:8px;
-  font-size:13px;font-weight:500;text-align:center;
-  pointer-events:none;opacity:0;transition:opacity 0.3s;
-  max-width:90vw;
-}
-#toast.show{opacity:1}
-#toast.success{background:rgba(102,187,107,0.9);color:#fff}
-#toast.error{background:rgba(239,83,80,0.9);color:#fff}
-#toast.info{background:rgba(79,195,247,0.9);color:#0b0b14}
-
-/* --- Overlay message on canvas --- */
-#canvas-msg{
-  position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
-  z-index:3;pointer-events:none;text-align:center;
-  color:var(--text-dim);font-size:13px;opacity:0.5;
-}
-
-/* --- Responsive --- */
-@media(min-width:768px){
-  #controls{max-height:40vh}
-  #controls.collapsed{max-height:48px}
-  #toast{bottom:calc(40vh + 20px)}
-  #drawer-body{padding:8px 24px 16px}
-  .chip{padding:8px 18px}
-}
-@media(max-width:480px){
-  #status-bar{padding:4px 8px;height:38px;gap:4px}
-  .badge{font-size:10px;padding:1px 8px}
-  #drawer-body{padding:6px 12px 12px}
-  .section{margin-bottom:12px}
-}
-@media(prefers-reduced-motion:reduce){
-  #controls{transition:none}
-  #drawer-toggle .arrow{transition:none}
-}
-</style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>MiBee Cam</title>
+    <link rel="stylesheet" href="/style.css">
 </head>
 <body>
+    <div class="app">
+        <!-- Status Bar -->
+        <div id="status-bar" class="status-bar">
+            <span class="badge" id="badge-wifi" data-i18n="status.wifi">WiFi</span>
+            <span class="badge" id="badge-ip">--</span>
+            <span class="badge" id="badge-resolution" data-i18n="status.resolution">--</span>
+            <span class="badge" id="badge-quality" data-i18n="status.quality">--</span>
+            <span class="badge" id="badge-heap" data-i18n="status.heap">--</span>
+            <span class="badge" id="badge-psram" data-i18n="status.psram">--</span>
+            <span class="badge" id="badge-clients" data-i18n="status.clients">0</span>
+            <span class="badge" id="badge-ai" data-i18n="status.ai">AI</span>
+        </div>
 
-<!-- Status Bar -->
-<header id="status-bar">
-  <span class="badge" id="badge-wifi">
-    <span class="dot green" id="wifi-dot"></span>
-    <span class="ico">&#8942;</span>
-    <span id="wifi-ssid">--</span>
-  </span>
-  <span class="badge" id="badge-ip">
-    <span class="ico">@</span>
-    <span id="ip-addr">--</span>
-  </span>
-  <span class="badge" id="badge-res">
-    <span class="ico">&#9726;</span>
-    <span id="cam-res">--</span>
-  </span>
-  <span class="badge" id="badge-ai">
-    <span class="ico">AI</span>
-    <span id="ai-indicator">off</span>
-  </span>
-  <span class="badge" id="badge-stream">
-    <span class="dot" id="stream-dot"></span>
-    <span id="stream-clients">0</span>
-  </span>
-</header>
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Stream Area -->
+            <div class="stream-area" id="stream-area">
+                <img id="stream-img" class="stream-img" src="/stream" alt="Camera Stream">
+                <canvas id="stream-overlay" class="stream-overlay" width="640" height="480"></canvas>
+                <div id="stream-status" class="hidden" data-i18n="stream.connecting">Connecting&hellip;</div>
+            </div>
 
-<!-- Stream Area -->
-<main id="stream-container">
-  <img id="stream" src="/stream" alt="Live feed">
-  <canvas id="canvas-overlay"></canvas>
-  <div id="canvas-msg">AI overlay initialized</div>
-  <div id="stream-status" class="hidden">Connecting&hellip;</div>
-</main>
+            <!-- Settings Panel -->
+            <div class="settings-panel" id="settings-panel">
+                <!-- Tab Navigation -->
+                <div class="settings-tabs" id="settings-tabs">
+                    <button class="settings-tab active" data-tab="camera" data-i18n="section.camera">Camera</button>
+                    <button class="settings-tab" data-tab="ai" data-i18n="section.ai_features">AI Features</button>
+                    <button class="settings-tab" data-tab="flash" data-i18n="section.flash_led">Flash LED</button>
+                    <button class="settings-tab" data-tab="network" data-i18n="section.wifi_config">WiFi</button>
+                    <button class="settings-tab" data-tab="streaming" data-i18n="section.streaming">Streaming</button>
+                    <button class="settings-tab" data-tab="system" data-i18n="section.system">System</button>
+                </div>
 
-<!-- Controls Drawer -->
-<div id="controls">
-  <button id="drawer-toggle" type="button">
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
-    Controls
-    <span class="arrow">&#9662;</span>
-  </button>
-  <div id="drawer-body">
+                <!-- Camera Section -->
+                <div class="settings-section active" id="section-camera">
+                    <div class="setting-group">
+                        <label class="setting-label" data-i18n="camera.framesize">Resolution</label>
+                        <select id="cam-framesize">
+                            <option value="0">96x96</option>
+                            <option value="1">QQVGA 160x120</option>
+                            <option value="2">128x128</option>
+                            <option value="3">QCIF 176x144</option>
+                            <option value="4">HQVGA 240x176</option>
+                            <option value="5">240x240</option>
+                            <option value="6">QVGA 320x240</option>
+                            <option value="7">320x320</option>
+                            <option value="8">CIF 400x296</option>
+                            <option value="9">HVGA 480x320</option>
+                            <option value="10" selected>VGA 640x480</option>
+                            <option value="11">SVGA 800x600</option>
+                            <option value="12">XGA 1024x768</option>
+                            <option value="13">HD 1280x720</option>
+                            <option value="14">SXGA 1280x1024</option>
+                            <option value="15">UXGA 1600x1200</option>
+                        </select>
+                    </div>
+                    <div class="setting-group">
+                        <label class="setting-label" data-i18n="camera.quality">JPEG Quality</label>
+                        <div class="slider-row">
+                            <input type="range" id="cam-quality" min="0" max="63" value="12">
+                            <span class="slider-value" id="cam-quality-val">12</span>
+                        </div>
+                    </div>
+                    <div class="setting-group">
+                        <label class="setting-label" data-i18n="camera.brightness">Brightness</label>
+                        <div class="slider-row">
+                            <input type="range" id="cam-brightness" min="-2" max="2" value="0" step="1">
+                            <span class="slider-value" id="cam-brightness-val">0</span>
+                        </div>
+                    </div>
+                    <div class="setting-group">
+                        <label class="setting-label" data-i18n="camera.contrast">Contrast</label>
+                        <div class="slider-row">
+                            <input type="range" id="cam-contrast" min="-2" max="2" value="0" step="1">
+                            <span class="slider-value" id="cam-contrast-val">0</span>
+                        </div>
+                    </div>
+                    <div class="setting-group">
+                        <label class="setting-label" data-i18n="camera.saturation">Saturation</label>
+                        <div class="slider-row">
+                            <input type="range" id="cam-saturation" min="-2" max="2" value="0" step="1">
+                            <span class="slider-value" id="cam-saturation-val">0</span>
+                        </div>
+                    </div>
+                    <div class="setting-group">
+                        <label class="setting-label" data-i18n="camera.sharpness">Sharpness</label>
+                        <div class="slider-row">
+                            <input type="range" id="cam-sharpness" min="-2" max="2" value="0" step="1">
+                            <span class="slider-value" id="cam-sharpness-val">0</span>
+                        </div>
+                    </div>
+                    <div class="setting-group flex-row flex-between">
+                        <label class="setting-label" data-i18n="camera.hmirror">Horizontal Mirror</label>
+                        <div class="toggle" id="cam-hmirror" role="switch" aria-checked="false" tabindex="0"></div>
+                    </div>
+                    <div class="setting-group flex-row flex-between">
+                        <label class="setting-label" data-i18n="camera.vflip">Vertical Flip</label>
+                        <div class="toggle" id="cam-vflip" role="switch" aria-checked="false" tabindex="0"></div>
+                    </div>
+                </div>
 
-    <!-- AI Features -->
-    <div class="section">
-      <div class="section-title">AI Features</div>
-      <div class="chip-row">
-        <label class="chip" id="chip-face" data-ai="face">
-          <input type="checkbox">&#9786; Face
-        </label>
-        <label class="chip" id="chip-motion" data-ai="motion">
-          <input type="checkbox">&#9650; Motion
-        </label>
-        <label class="chip" id="chip-qr" data-ai="qr">
-          <input type="checkbox">&#9744; QR
-        </label>
-      </div>
+                <!-- AI Section -->
+                <div class="settings-section" id="section-ai">
+                    <div class="setting-group flex-row flex-between">
+                        <label class="setting-label" data-i18n="ai.face">Face Detection</label>
+                        <div class="toggle" id="ai-face" role="switch" aria-checked="false" tabindex="0"></div>
+                    </div>
+                    <div class="setting-group flex-row flex-between">
+                        <label class="setting-label" data-i18n="ai.motion">Motion Detection</label>
+                        <div class="toggle" id="ai-motion" role="switch" aria-checked="false" tabindex="0"></div>
+                    </div>
+                    <div class="setting-group flex-row flex-between">
+                        <label class="setting-label" data-i18n="ai.qr">QR Code</label>
+                        <div class="toggle" id="ai-qr" role="switch" aria-checked="false" tabindex="0"></div>
+                    </div>
+                    <div class="setting-group">
+                        <p class="setting-description" data-i18n="ai.note">AI requires VGA resolution (640x480)</p>
+                    </div>
+                </div>
+
+                <!-- Flash LED Section -->
+                <div class="settings-section" id="section-flash">
+                    <div class="setting-group">
+                        <label class="setting-label" data-i18n="flash.brightness">LED Brightness</label>
+                        <div class="slider-row">
+                            <input type="range" id="led-brightness" min="0" max="100" value="0">
+                            <span class="slider-value" id="led-brightness-val">0</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Network Section -->
+                <div class="settings-section" id="section-network">
+                    <div class="setting-group">
+                        <label data-i18n="network.ssid_label">SSID</label>
+                        <input type="text" id="wifi-ssid" data-i18n-placeholder="network.ssid_placeholder" placeholder="Network name">
+                    </div>
+                    <div class="setting-group">
+                        <label data-i18n="network.password_label">Password</label>
+                        <input type="password" id="wifi-pass" data-i18n-placeholder="network.password_placeholder" placeholder="Leave blank to keep current">
+                    </div>
+                    <button class="btn-primary" id="btn-wifi-save" data-i18n="network.save">Save &amp; Reboot</button>
+                </div>
+
+                <!-- Streaming Section -->
+                <div class="settings-section" id="section-streaming">
+                    <div class="setting-group">
+                        <label class="setting-label" data-i18n="streaming.rtsp_user">RTSP Username</label>
+                        <input type="text" id="rtsp-user" placeholder="admin">
+                    </div>
+                    <div class="setting-group">
+                        <label class="setting-label" data-i18n="streaming.rtsp_pass">RTSP Password</label>
+                        <input type="password" id="rtsp-pass" placeholder="Password">
+                    </div>
+                    <div class="setting-group flex-row flex-between">
+                        <label class="setting-label" data-i18n="streaming.onvif">ONVIF Discovery</label>
+                        <div class="toggle" id="onvif-enable" role="switch" aria-checked="false" tabindex="0"></div>
+                    </div>
+                    <button class="btn-primary" id="btn-streaming-save" data-i18n="btn.save">Save</button>
+                </div>
+
+                <!-- System Section -->
+                <div class="settings-section" id="section-system">
+                    <div class="setting-group">
+                        <label class="setting-label" data-i18n="system.uptime">Uptime</label>
+                        <span id="sys-uptime">--</span>
+                    </div>
+                    <div class="setting-group">
+                        <label class="setting-label" data-i18n="system.free_heap">Free Heap</label>
+                        <span id="sys-heap">--</span>
+                    </div>
+                    <div class="setting-group">
+                        <label class="setting-label" data-i18n="system.free_psram">Free PSRAM</label>
+                        <span id="sys-psram">--</span>
+                    </div>
+                    <!-- Theme toggle -->
+                    <div class="setting-group flex-row flex-between">
+                        <label class="setting-label" data-i18n="theme.toggle">Dark / Light</label>
+                        <div class="toggle" id="toggle-theme" role="switch" aria-checked="false" tabindex="0"></div>
+                    </div>
+                    <!-- Language toggle -->
+                    <div class="setting-group flex-row flex-between">
+                        <label class="setting-label" data-i18n="lang.toggle">EN / 中文</label>
+                        <div class="toggle" id="toggle-lang" role="switch" aria-checked="false" tabindex="0"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
-    <!-- Flash LED -->
-    <div class="section">
-      <div class="section-title">Flash LED</div>
-      <div class="slider-row">
-        <input type="range" id="led-slider" min="0" max="100" value="0">
-        <span id="led-value">0%</span>
-        <button id="led-off-btn" type="button">Off</button>
-      </div>
-    </div>
+    <!-- Toast -->
+    <div id="toast" class="toast"></div>
 
-    <!-- WiFi Config -->
-    <div class="section">
-      <div class="section-title">WiFi Configuration</div>
-      <div class="form-group">
-        <label for="wifi-ssid-input">SSID</label>
-        <input type="text" id="wifi-ssid-input" placeholder="Network name">
-      </div>
-      <div class="form-group">
-        <label for="wifi-pass-input">Password</label>
-        <input type="password" id="wifi-pass-input" placeholder="Leave blank to keep current">
-      </div>
-      <button class="btn-primary" id="wifi-save-btn" type="button">Save &amp; Reconnect</button>
-    </div>
-
-  </div>
-</div>
-
-<!-- Toast -->
-<div id="toast"></div>
-
-<script>
-(function() {
-'use strict';
-
-/* ---------- State ---------- */
-var state = {
-  ai: { face: false, motion: false, qr: false },
-  ledBrightness: 0,
-  streamRetries: 0,
-  streamOk: false,
-  config: null
-};
-
-/* ---------- DOM refs ---------- */
-var $ = function(id) { return document.getElementById(id); };
-var streamImg = $('stream');
-var canvas = $('canvas-overlay');
-var ctx = canvas.getContext('2d');
-var canvasMsg = $('canvas-msg');
-var streamStatus = $('stream-status');
-var controls = $('controls');
-var toastEl = $('toast');
-var ledSlider = $('led-slider');
-var ledValue = $('led-value');
-var wifiSsidIn = $('wifi-ssid-input');
-var wifiPassIn = $('wifi-pass-input');
-
-/* ---------- Helpers ---------- */
-function showToast(msg, type) {
-  toastEl.textContent = msg;
-  toastEl.className = 'show ' + (type || 'info');
-  clearTimeout(toastEl._hide);
-  toastEl._hide = setTimeout(function() { toastEl.className = ''; }, 3000);
-}
-
-function api(url, opts) {
-  return fetch(url, opts).then(function(r) {
-    return r.json().then(function(j) {
-      if (!j.ok) throw new Error(j.error || 'Unknown error');
-      return j.data || {};
-    });
-  });
-}
-
-/* ---------- Stream ---------- */
-function connectStream() {
-  var ts = Date.now();
-  streamImg.src = '/stream?_=' + ts;
-  streamStatus.className = '';
-  streamStatus.textContent = 'Connecting\u2026';
-}
-
-streamImg.onerror = function() {
-  state.streamRetries++;
-  state.streamOk = false;
-  $('stream-dot').className = 'dot red';
-  streamStatus.className = '';
-  streamStatus.textContent = 'Stream error, reconnecting\u2026';
-  var delay = Math.min(1000 * Math.pow(2, Math.min(state.streamRetries, 5)), 15000);
-  setTimeout(connectStream, delay);
-};
-
-streamImg.onload = function() {
-  state.streamRetries = 0;
-  state.streamOk = true;
-  $('stream-dot').className = 'dot green';
-  streamStatus.className = 'hidden';
-};
-
-/* ---------- Status Poll ---------- */
-function updateStatus(data) {
-  /* Update badges */
-  $('wifi-ssid').textContent = data.wifi_ssid || '--';
-  $('ip-addr').textContent = data.ip || '--';
-  $('cam-res').textContent = data.camera_resolution || '--';
-  $('stream-clients').textContent = String(data.mjpeg_clients || 0);
-
-  /* WiFi dot */
-  var wifiDot = $('wifi-dot');
-  if (data.ip && data.ip !== '0.0.0.0' && data.ip !== '192.168.4.1') {
-    wifiDot.className = 'dot green';
-  } else if (data.ip === '192.168.4.1') {
-    wifiDot.className = 'dot blue';
-  } else {
-    wifiDot.className = 'dot red';
-  }
-
-  /* AI indicator */
-  var aiStatus = data.ai_status || {};
-  state.ai.face = !!aiStatus.face;
-  state.ai.motion = !!aiStatus.motion;
-  state.ai.qr = !!aiStatus.qr;
-  var activeCount = (state.ai.face ? 1 : 0) + (state.ai.motion ? 1 : 0) + (state.ai.qr ? 1 : 0);
-  $('ai-indicator').textContent = activeCount > 0 ? activeCount + ' active' : 'off';
-
-  /* Sync chip UI */
-  syncAIChips();
-}
-
-function fetchStatus() {
-  api('/status').then(updateStatus).catch(function(err) {
-    // Silently retry on next interval
-  });
-}
-
-/* ---------- AI Toggles ---------- */
-function syncAIChips() {
-  ['face','motion','qr'].forEach(function(k) {
-    var chip = $('chip-' + k);
-    if (!chip) return;
-    var cb = chip.querySelector('input[type=checkbox]');
-    var active = state.ai[k];
-    cb.checked = active;
-    chip.className = 'chip' + (active ? ' active' : '');
-  });
-}
-
-function toggleAI(feature, enabled) {
-  var body = {};
-  body[feature] = enabled;
-  api('/ai', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  }).then(function(data) {
-    state.ai.face = !!data.face;
-    state.ai.motion = !!data.motion;
-    state.ai.qr = !!data.qr;
-    syncAIChips();
-    showToast((enabled ? 'Enabled' : 'Disabled') + ' ' + feature + ' detection', 'info');
-  }).catch(function(err) {
-    showToast('AI toggle failed: ' + err.message, 'error');
-    /* revert */
-    state.ai[feature] = !enabled;
-    syncAIChips();
-  });
-}
-
-/* chip click handler */
-document.querySelectorAll('.chip').forEach(function(chip) {
-  chip.addEventListener('click', function(e) {
-    var feature = chip.getAttribute('data-ai');
-    if (!feature) return;
-    var newState = !state.ai[feature];
-    /* Optimistic update */
-    state.ai[feature] = newState;
-    syncAIChips();
-    toggleAI(feature, newState);
-  });
-});
-
-/* ---------- Flash LED ---------- */
-var ledTimer = null;
-
-function setLED(val) {
-  val = Math.round(val);
-  ledSlider.value = val;
-  ledValue.textContent = val + '%';
-  state.ledBrightness = val;
-
-  if (ledTimer) clearTimeout(ledTimer);
-  ledTimer = setTimeout(function() {
-    api('/led', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ brightness: val })
-    }).catch(function(err) {
-      showToast('LED control failed: ' + err.message, 'error');
-    });
-  }, 150);
-}
-
-ledSlider.addEventListener('input', function() {
-  setLED(parseInt(this.value, 10));
-});
-
-$('led-off-btn').addEventListener('click', function() {
-  setLED(0);
-});
-
-/* ---------- WiFi Config ---------- */
-function loadConfig() {
-  api('/config').then(function(data) {
-    state.config = data;
-    wifiSsidIn.value = data.wifi_ssid || '';
-    wifiPassIn.value = '';
-    wifiPassIn.placeholder = data.wifi_pass === '****' ? 'Enter new password' : '';
-  }).catch(function(err) {
-    showToast('Failed to load config: ' + err.message, 'error');
-  });
-}
-
-$('wifi-save-btn').addEventListener('click', function() {
-  var body = {};
-  var ssid = wifiSsidIn.value.trim();
-  if (ssid) body.wifi_ssid = ssid;
-  var pass = wifiPassIn.value;
-  if (pass) body.wifi_pass = pass;
-
-  if (!body.wifi_ssid) {
-    showToast('SSID is required', 'error');
-    return;
-  }
-
-  api('/config', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  }).then(function() {
-    showToast('WiFi config saved. Reconnecting\u2026', 'success');
-    /* Re-fetch config after a moment */
-    setTimeout(loadConfig, 2000);
-  }).catch(function(err) {
-    showToast('Config save failed: ' + err.message, 'error');
-  });
-});
-
-/* ---------- Drawer Toggle ---------- */
-$('drawer-toggle').addEventListener('click', function() {
-  controls.classList.toggle('collapsed');
-});
-
-/* ---------- Canvas / AI Overlay ---------- */
-function resizeCanvas() {
-  var rect = streamImg.getBoundingClientRect();
-  if (rect.width > 0 && rect.height > 0) {
-    canvas.width = rect.width;
-    canvas.height = rect.height;
-    canvas.style.width = rect.width + 'px';
-    canvas.style.height = rect.height + 'px';
-  }
-}
-
-function pollAIOverlay() {
-  /* Try the future /ai/status endpoint — may not exist yet */
-  fetch('/ai/status').then(function(r) {
-    if (!r.ok) throw new Error('Not available');
-    return r.json();
-  }).then(function(resp) {
-    canvasMsg.style.display = 'none';
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    /* Expect { ok: true, data: { detections: [...] } } or similar */
-    var data = resp.data || resp;
-    var detections = data.detections || [];
-    if (detections.length === 0) {
-      drawCanvasOverlay('No detections', true);
-      return;
-    }
-
-    var scaleX = canvas.width / streamImg.naturalWidth;
-    var scaleY = canvas.height / streamImg.naturalHeight;
-
-    ctx.strokeStyle = '#4fc3f7';
-    ctx.lineWidth = 2;
-    ctx.shadowColor = 'rgba(79,195,247,0.5)';
-    ctx.shadowBlur = 6;
-
-    detections.forEach(function(d) {
-      var x = d.x * scaleX;
-      var y = d.y * scaleY;
-      var w = d.w * scaleX;
-      var h = d.h * scaleY;
-      ctx.strokeRect(x, y, w, h);
-
-      if (d.label || d.confidence) {
-        var label = d.label || '';
-        if (d.confidence) label += ' ' + Math.round(d.confidence * 100) + '%';
-        ctx.font = '12px -apple-system, sans-serif';
-        ctx.fillStyle = '#4fc3f7';
-        ctx.fillText(label.trim(), x + 4, y - 4);
-      }
-    });
-
-    ctx.shadowBlur = 0;
-  }).catch(function() {
-    /* Endpoint not available yet — just show ready state */
-    drawCanvasOverlay('AI overlay ready', true);
-  });
-
-  /* Also sync canvas sizing */
-  resizeCanvas();
-}
-
-function drawCanvasOverlay(text, subtle) {
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  canvasMsg.style.display = 'block';
-  canvasMsg.textContent = text;
-  canvasMsg.style.opacity = subtle ? '0.35' : '0.7';
-}
-
-/* Resize canvas on window resize */
-var resizeTimer = null;
-window.addEventListener('resize', function() {
-  if (resizeTimer) clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(function() {
-    resizeCanvas();
-    /* If we have no detections, keep ready state on new size */
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-  }, 200);
-});
-
-/* ---------- Init ---------- */
-function init() {
-  connectStream();
-  fetchStatus();
-  loadConfig();
-
-  /* Polling */
-  setInterval(fetchStatus, 500);
-  setInterval(pollAIOverlay, 500);
-
-  /* Stream health check every 10s */
-  setInterval(function() {
-    if (!state.streamOk) {
-      /* Stream may have silently died — force reconnect */
-      $('stream-dot').className = 'dot red';
-      connectStream();
-    }
-  }, 10000);
-
-  /* LED slider initial */
-  setLED(0);
-
-  /* Open drawer by default on desktop */
-  if (window.innerWidth >= 768) {
-    controls.classList.remove('collapsed');
-  } else {
-    controls.classList.add('collapsed');
-  }
-}
-
-/* Kick off */
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', init);
-} else {
-  init();
-}
-
-})();
-</script>
+    <script src="/i18n.js"></script>
+    <script src="/app.js"></script>
 </body>
 </html>
