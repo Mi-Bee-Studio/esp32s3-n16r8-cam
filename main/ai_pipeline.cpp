@@ -94,6 +94,8 @@ static uint8_t *s_prev_gray    = NULL;  /* previous frame grayscale */
 static bool     s_have_prev    = false; /* true after first frame */
 
 /* ---- Task -------------------------------------------------------- */
+/** Task handle waiting for AI task to stop (true-join). */
+static TaskHandle_t  s_ai_stop_waiter = NULL;
 
 static TaskHandle_t  s_ai_task    = NULL;
 static volatile bool s_ai_running = false;
@@ -370,6 +372,12 @@ static void ai_task(void *arg)
     }
 
     /* ---- Clean exit --------------------------------------------- */
+    /* Signal the waiter that we have exited the loop (true-join) */
+    if (s_ai_stop_waiter) {
+        xTaskNotifyGive(s_ai_stop_waiter);
+        s_ai_stop_waiter = NULL;
+    }
+
     frame_broadcaster_unsubscribe(s_ai_sub);
     s_ai_sub = NULL;
 
@@ -559,7 +567,10 @@ void ai_stop_task(void)
 {
     s_ai_running = false;
     if (s_ai_task) {
-        vTaskDelay(pdMS_TO_TICKS(100));
+        s_ai_stop_waiter = xTaskGetCurrentTaskHandle();
+        xTaskNotifyGive(s_ai_task);
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
         s_ai_task = NULL;
+        s_ai_stop_waiter = NULL;
     }
 }

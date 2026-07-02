@@ -17,10 +17,14 @@
 #include "mjpeg_streamer.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_system.h"
+#include "freertos/FreeRTOS.h"
 #include "cJSON.h"
 #include "config_manager.h"
 #include "wifi_manager.h"
 #include "flash_led.h"
+#include "ai_pipeline.h"
+#include "camera_driver.h"
 #include "esp_spiffs.h"  /* for stat on SPIFFS files */
 #include <string.h>
 #include <stdlib.h>
@@ -170,35 +174,25 @@ static esp_err_t api_status_handler(httpd_req_t *req)
     cJSON_AddStringToObject(data, "ip", wifi_manager_get_ip());
 
     /* Camera */
-    const char *res_str = "VGA";
-    switch (config_get_cam_framesize()) {
-        case 0:  res_str = "QQVGA";    break;
-        case 1:  res_str = "QQVGA2";   break;
-        case 2:  res_str = "QQQVGA";   break;
-        case 3:  res_str = "QCIF";     break;
-        case 4:  res_str = "HQVGA";    break;
-        case 5:  res_str = "QVGA";     break;
-        case 6:  res_str = "CIF";      break;
-        case 7:  res_str = "VGA";      break;
-        case 8:  res_str = "SVGA";     break;
-        case 9:  res_str = "XGA";      break;
-        case 10: res_str = "HD";       break;
-        case 11: res_str = "SXGA";     break;
-        case 12: res_str = "UXGA";     break;
-        case 13: res_str = "FHD";      break;
-        case 14: res_str = "QXGA";     break;
-        default: res_str = "unknown";  break;
-    }
-    cJSON_AddStringToObject(data, "camera_resolution", res_str);
+    cJSON_AddStringToObject(data, "camera_resolution",
+        camera_framesize_name(config_get_cam_framesize()));
     cJSON_AddNumberToObject(data, "camera_framesize", config_get_cam_framesize());
     cJSON_AddNumberToObject(data, "camera_quality", config_get_cam_quality());
+
+    /* Camera sensor settings */
+    cJSON_AddNumberToObject(data, "cam_brightness", config_get_cam_brightness());
+    cJSON_AddNumberToObject(data, "cam_contrast",   config_get_cam_contrast());
+    cJSON_AddNumberToObject(data, "cam_saturation", config_get_cam_saturation());
+    cJSON_AddNumberToObject(data, "cam_sharpness",  config_get_cam_sharpness());
+    cJSON_AddBoolToObject(data,   "cam_hmirror",    config_get_cam_hmirror());
+    cJSON_AddBoolToObject(data,   "cam_vflip",      config_get_cam_vflip());
 
     /* AI status */
     cJSON *ai = cJSON_CreateObject();
     if (ai) {
-        cJSON_AddBoolToObject(ai, "face",   config_get_ai_face_enable());
-        cJSON_AddBoolToObject(ai, "motion", config_get_ai_motion_enable());
-        cJSON_AddBoolToObject(ai, "qr",     config_get_ai_qr_enable());
+        cJSON_AddBoolToObject(ai, "face",   ai_is_enabled(AI_FEATURE_FACE_DETECT));
+        cJSON_AddBoolToObject(ai, "motion", ai_is_enabled(AI_FEATURE_MOTION_DETECT));
+        cJSON_AddBoolToObject(ai, "qr",     ai_is_enabled(AI_FEATURE_QR_DECODE));
         cJSON_AddItemToObject(data, "ai_status", ai);
     }
 
@@ -209,6 +203,8 @@ static esp_err_t api_status_handler(httpd_req_t *req)
         (double)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     cJSON_AddNumberToObject(data, "mjpeg_clients",
         mjpeg_stream_client_count());
+    cJSON_AddNumberToObject(data, "uptime",
+        (double)(xTaskGetTickCount() * portTICK_PERIOD_MS) / 1000.0);
 
     return json_ok(req, data);
 }
@@ -243,6 +239,12 @@ static esp_err_t api_config_get_handler(httpd_req_t *req)
         cJSON_AddStringToObject(data, "rtsp_pass", "");
     }
     cJSON_AddBoolToObject(data,   "onvif_enable",     config_get_onvif_enable());
+    cJSON_AddNumberToObject(data, "cam_brightness", config_get_cam_brightness());
+    cJSON_AddNumberToObject(data, "cam_contrast",   config_get_cam_contrast());
+    cJSON_AddNumberToObject(data, "cam_saturation", config_get_cam_saturation());
+    cJSON_AddNumberToObject(data, "cam_sharpness",  config_get_cam_sharpness());
+    cJSON_AddBoolToObject(data,   "cam_hmirror",    config_get_cam_hmirror());
+    cJSON_AddBoolToObject(data,   "cam_vflip",      config_get_cam_vflip());
     cJSON_AddNumberToObject(data, "mjpeg_clients",    mjpeg_stream_client_count());
 
     return json_ok(req, data);
@@ -268,17 +270,23 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
     /* Iterate over known config keys and apply via config_set() */
     cJSON *item;
     int updated = 0;
-
+    bool wifi_changed = false;
     const char *known_keys[] = {
         "wifi_ssid", "wifi_pass", "cam_framesize", "cam_quality",
         "ai_face_enable", "ai_motion_enable", "ai_qr_enable",
         "rtsp_user", "rtsp_pass", "onvif_enable",
+        "cam_brightness", "cam_contrast", "cam_saturation", "cam_sharpness",
+        "cam_hmirror", "cam_vflip",
         NULL
     };
 
     for (int i = 0; known_keys[i]; i++) {
         item = cJSON_GetObjectItem(json, known_keys[i]);
         if (!item) continue;
+        if (strcmp(known_keys[i], "wifi_ssid") == 0 ||
+            strcmp(known_keys[i], "wifi_pass") == 0) {
+            wifi_changed = true;
+        }
 
         char value_str[64];
         if (cJSON_IsBool(item) || cJSON_IsNumber(item)) {
@@ -301,6 +309,12 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
 
     if (updated > 0) {
         config_save();
+    }
+
+    if (wifi_changed) {
+        ESP_LOGW(TAG, "WiFi config changed -- rebooting in 1s");
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        esp_restart();
     }
 
     cJSON *resp_data = cJSON_CreateObject();
@@ -370,15 +384,14 @@ static esp_err_t api_ai_handler(httpd_req_t *req)
         return json_error(req, "Invalid JSON", HTTPD_400_BAD_REQUEST);
     }
 
-    /* Toggle AI features — for now just log and persist config.
-     * The AI pipeline is not yet integrated, but the config values
-     * are stored so that the pipeline can read them when implemented. */
+    /* Toggle AI features — persist config AND apply live via ai_enable(). */
     cJSON *item;
     int updated = 0;
 
     item = cJSON_GetObjectItem(json, "face");
     if (item && cJSON_IsBool(item)) {
         config_set("ai_face_enable", item->valueint ? "1" : "0");
+        ai_enable(AI_FEATURE_FACE_DETECT, item->valueint ? true : false);
         ESP_LOGI(TAG, "AI face detection %s", item->valueint ? "enabled" : "disabled");
         updated++;
     }
@@ -386,6 +399,7 @@ static esp_err_t api_ai_handler(httpd_req_t *req)
     item = cJSON_GetObjectItem(json, "motion");
     if (item && cJSON_IsBool(item)) {
         config_set("ai_motion_enable", item->valueint ? "1" : "0");
+        ai_enable(AI_FEATURE_MOTION_DETECT, item->valueint ? true : false);
         ESP_LOGI(TAG, "AI motion detection %s", item->valueint ? "enabled" : "disabled");
         updated++;
     }
@@ -393,6 +407,7 @@ static esp_err_t api_ai_handler(httpd_req_t *req)
     item = cJSON_GetObjectItem(json, "qr");
     if (item && cJSON_IsBool(item)) {
         config_set("ai_qr_enable", item->valueint ? "1" : "0");
+        ai_enable(AI_FEATURE_QR_DECODE, item->valueint ? true : false);
         ESP_LOGI(TAG, "AI QR detection %s", item->valueint ? "enabled" : "disabled");
         updated++;
     }
@@ -411,6 +426,195 @@ static esp_err_t api_ai_handler(httpd_req_t *req)
         cJSON_AddBoolToObject(data, "qr",     config_get_ai_qr_enable());
     }
     return json_ok(req, data);
+}
+
+/* ------------------------------------------------------------------ */
+/*  GET /ai/status                                                     */
+/* ------------------------------------------------------------------ */
+
+static esp_err_t ai_status_get_handler(httpd_req_t *req)
+{
+    ai_result_t result;
+    if (!ai_get_result(&result)) {
+        return json_error(req, "AI pipeline not running", HTTPD_404_NOT_FOUND);
+    }
+
+    cJSON *data = cJSON_CreateObject();
+    if (!data) {
+        return json_error(req, "Out of memory", HTTPD_500_INTERNAL_SERVER_ERROR);
+    }
+
+    /* Face */
+    cJSON *face = cJSON_CreateObject();
+    cJSON_AddNumberToObject(face, "count", result.face.count);
+    cJSON *boxes = cJSON_CreateArray();
+    for (int i = 0; i < result.face.count && i < AI_MAX_FACES; i++) {
+        cJSON *box = cJSON_CreateObject();
+        cJSON_AddNumberToObject(box, "x", result.face.faces[i].x);
+        cJSON_AddNumberToObject(box, "y", result.face.faces[i].y);
+        cJSON_AddNumberToObject(box, "w", result.face.faces[i].w);
+        cJSON_AddNumberToObject(box, "h", result.face.faces[i].h);
+        cJSON_AddNumberToObject(box, "confidence", result.face.faces[i].confidence);
+        cJSON_AddItemToArray(boxes, box);
+    }
+    cJSON_AddItemToObject(face, "boxes", boxes);
+    cJSON_AddItemToObject(data, "face", face);
+
+    /* Motion */
+    cJSON *motion = cJSON_CreateObject();
+    cJSON_AddNumberToObject(motion, "score", result.motion.score);
+    cJSON_AddItemToObject(data, "motion", motion);
+
+    /* QR */
+    cJSON *qr = cJSON_CreateObject();
+    cJSON_AddNumberToObject(qr, "count", result.qr.count);
+    cJSON *codes = cJSON_CreateArray();
+    for (int i = 0; i < result.qr.count && i < AI_MAX_QR_CODES; i++) {
+        cJSON_AddItemToArray(codes, cJSON_CreateString(result.qr.strings[i]));
+    }
+    cJSON_AddItemToObject(qr, "codes", codes);
+    cJSON_AddItemToObject(data, "qr", qr);
+
+    /* Sequence */
+    cJSON_AddNumberToObject(data, "seq", result.frame_seq);
+
+    return json_ok(req, data);
+}
+
+/* ------------------------------------------------------------------ */
+/*  GET /camera                                                         */
+/* ------------------------------------------------------------------ */
+
+static esp_err_t api_camera_get_handler(httpd_req_t *req)
+{
+    cJSON *data = cJSON_CreateObject();
+    if (!data) {
+        return json_error(req, "Out of memory", HTTPD_500_INTERNAL_SERVER_ERROR);
+    }
+
+    cJSON_AddNumberToObject(data, "cam_framesize",  config_get_cam_framesize());
+    cJSON_AddNumberToObject(data, "cam_quality",    config_get_cam_quality());
+    cJSON_AddNumberToObject(data, "cam_brightness", config_get_cam_brightness());
+    cJSON_AddNumberToObject(data, "cam_contrast",   config_get_cam_contrast());
+    cJSON_AddNumberToObject(data, "cam_saturation", config_get_cam_saturation());
+    cJSON_AddNumberToObject(data, "cam_sharpness",  config_get_cam_sharpness());
+    cJSON_AddBoolToObject(data,   "cam_hmirror",    config_get_cam_hmirror());
+    cJSON_AddBoolToObject(data,   "cam_vflip",      config_get_cam_vflip());
+    cJSON_AddStringToObject(data, "cam_framesize_name", camera_framesize_name(config_get_cam_framesize()));
+
+    return json_ok(req, data);
+}
+
+/* ------------------------------------------------------------------ */
+/*  POST /camera                                                        */
+/* ------------------------------------------------------------------ */
+
+static esp_err_t api_camera_post_handler(httpd_req_t *req)
+{
+    char *body = read_body(req, 2048);
+    if (!body) {
+        return json_error(req, "Empty or too large body", HTTPD_400_BAD_REQUEST);
+    }
+
+    cJSON *json = cJSON_Parse(body);
+    free(body);
+    if (!json) {
+        return json_error(req, "Invalid JSON", HTTPD_400_BAD_REQUEST);
+    }
+
+    cJSON *item;
+    bool need_sensor_apply = false;
+    bool need_reinit = false;
+    uint8_t new_framesize = config_get_cam_framesize();
+    uint8_t new_quality = config_get_cam_quality();
+    int updated = 0;
+
+    /* cam_framesize */
+    item = cJSON_GetObjectItem(json, "cam_framesize");
+    if (item && cJSON_IsNumber(item)) {
+        int val = item->valueint;
+        if (val < 0 || val > 24) {
+            cJSON_Delete(json);
+            return json_error(req, "cam_framesize out of range (0-24)", HTTPD_400_BAD_REQUEST);
+        }
+        /* AI safety check — reject non-VGA if any AI feature is enabled */
+        if (!camera_framesize_is_vga((uint8_t)val) &&
+            (ai_is_enabled(AI_FEATURE_FACE_DETECT) ||
+             ai_is_enabled(AI_FEATURE_MOTION_DETECT) ||
+             ai_is_enabled(AI_FEATURE_QR_DECODE))) {
+            cJSON_Delete(json);
+            return json_error(req, "Disable AI to use non-VGA resolution", HTTPD_400_BAD_REQUEST);
+        }
+        new_framesize = (uint8_t)val;
+        need_reinit = true;
+    }
+
+    /* cam_quality */
+    item = cJSON_GetObjectItem(json, "cam_quality");
+    if (item && cJSON_IsNumber(item)) {
+        int val = item->valueint;
+        if (val < 0 || val > 63) {
+            cJSON_Delete(json);
+            return json_error(req, "cam_quality out of range (0-63)", HTTPD_400_BAD_REQUEST);
+        }
+        new_quality = (uint8_t)val;
+        need_reinit = true;
+    }
+
+    /* Sensor keys: brightness, contrast, saturation, sharpness */
+    const char *sensor_int_keys[] = { "cam_brightness", "cam_contrast", "cam_saturation", "cam_sharpness" };
+    for (size_t i = 0; i < 4; i++) {
+        item = cJSON_GetObjectItem(json, sensor_int_keys[i]);
+        if (item && cJSON_IsNumber(item)) {
+            int val = item->valueint;
+            if (val < -2 || val > 2) {
+                cJSON_Delete(json);
+                char msg[64];
+                snprintf(msg, sizeof(msg), "%s out of range (-2..+2)", sensor_int_keys[i]);
+                return json_error(req, msg, HTTPD_400_BAD_REQUEST);
+            }
+            char buf[8];
+            snprintf(buf, sizeof(buf), "%d", val);
+            config_set(sensor_int_keys[i], buf);
+            need_sensor_apply = true;
+            updated++;
+        }
+    }
+
+    /* Sensor keys: hmirror, vflip */
+    const char *sensor_bool_keys[] = { "cam_hmirror", "cam_vflip" };
+    for (size_t i = 0; i < 2; i++) {
+        item = cJSON_GetObjectItem(json, sensor_bool_keys[i]);
+        if (item && cJSON_IsBool(item)) {
+            config_set(sensor_bool_keys[i], item->valueint ? "1" : "0");
+            need_sensor_apply = true;
+            updated++;
+        }
+    }
+
+    /* Persist config changes */
+    if (updated > 0) {
+        config_save();
+    }
+
+    /* Apply sensor settings live */
+    if (need_sensor_apply) {
+        camera_apply_sensor_settings();
+    }
+
+    /* Coordinated reinit for framesize/quality changes */
+    if (need_reinit) {
+        esp_err_t err = camera_reinit(new_framesize, new_quality);
+        if (err != ESP_OK) {
+            cJSON_Delete(json);
+            return json_error(req, "Camera reinit failed", HTTPD_500_INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    cJSON_Delete(json);
+
+    /* Return current state (reuses GET handler) */
+    return api_camera_get_handler(req);
 }
 
 /* ------------------------------------------------------------------ */
@@ -447,6 +651,9 @@ static const uri_entry_t s_uris[] = {
     { "/config",    HTTP_POST,    api_config_post_handler },
     { "/led",       HTTP_POST,    api_led_handler         },
     { "/ai",        HTTP_POST,    api_ai_handler          },
+    { "/ai/status", HTTP_GET,     ai_status_get_handler },
+    { "/camera",    HTTP_GET,     api_camera_get_handler  },
+    { "/camera",    HTTP_POST,    api_camera_post_handler },
     /* CORS preflight */
     { "/*",         HTTP_OPTIONS, options_handler         },
     /* Catch-all static files */

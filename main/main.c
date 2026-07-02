@@ -156,6 +156,11 @@ void app_main(void)
         } else {
             ESP_LOGE(TAG, "AI pipeline init failed: %s", esp_err_to_name(ai_err));
         }
+
+        /* Wire AI config to live pipeline state (override defaults) */
+        ai_enable(AI_FEATURE_FACE_DETECT,   config_get_ai_face_enable());
+        ai_enable(AI_FEATURE_MOTION_DETECT, config_get_ai_motion_enable());
+        ai_enable(AI_FEATURE_QR_DECODE,     config_get_ai_qr_enable());
         esp_err_t http_err = web_server_start(80);
         if (http_err == ESP_OK) {
             ESP_LOGI(TAG, "Web server running on port 80");

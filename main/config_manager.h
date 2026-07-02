@@ -35,7 +35,9 @@ esp_err_t config_load(void);
  * @brief  Set a single key-value pair in memory.
  * @param  key   One of: wifi_ssid, wifi_pass, cam_framesize, cam_quality,
  *               ai_face_enable, ai_motion_enable, ai_qr_enable,
- *               rtsp_user, rtsp_pass, onvif_enable
+ *               rtsp_user, rtsp_pass, onvif_enable,
+ *               cam_brightness, cam_contrast, cam_saturation, cam_sharpness,
+ *               cam_hmirror, cam_vflip
  * @param  value String representation.  Numeric keys parse uint8.
  * @return ESP_OK, ESP_ERR_INVALID_ARG for unknown keys or bad values.
  * @note   Does NOT write to NVS — call config_save() to persist.
@@ -67,6 +69,13 @@ bool        config_get_ai_qr_enable(void);
 const char *config_get_rtsp_user(void);
 const char *config_get_rtsp_pass(void);
 bool        config_get_onvif_enable(void);
+
+int8_t     config_get_cam_brightness(void);
+int8_t     config_get_cam_contrast(void);
+int8_t     config_get_cam_saturation(void);
+int8_t     config_get_cam_sharpness(void);
+bool       config_get_cam_hmirror(void);
+bool       config_get_cam_vflip(void);
 
 #ifdef __cplusplus
 }

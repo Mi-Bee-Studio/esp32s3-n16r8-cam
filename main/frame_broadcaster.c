@@ -65,6 +65,8 @@ static TaskHandle_t s_task = NULL;
 /** Flag to signal the broadcaster task to stop. */
 static volatile bool s_running = false;
 
+/** Task handle waiting for broadcaster to stop (true-join). */
+static TaskHandle_t s_stop_waiter = NULL;
 /* ---- FPS tracking ------------------------------------------------- */
 
 static uint32_t s_frame_count = 0;
@@ -147,6 +149,12 @@ static void broadcaster_task(void *arg)
         }
     }
 
+    /* Signal the waiter that we have exited the loop (true-join) */
+    if (s_stop_waiter) {
+        xTaskNotifyGive(s_stop_waiter);
+        s_stop_waiter = NULL;
+    }
+
     ESP_LOGI(TAG, "Broadcaster task stopped");
     s_task = NULL;
     vTaskDelete(NULL);
@@ -211,9 +219,13 @@ void frame_broadcaster_stop(void)
 {
     s_running = false;
     if (s_task) {
-        /* Give the task a chance to exit cleanly */
-        vTaskDelay(pdMS_TO_TICKS(50));
+        s_stop_waiter = xTaskGetCurrentTaskHandle();
+        /* Notify task so it checks s_running promptly */
+        xTaskNotifyGive(s_task);
+        /* Wait for the task to signal it has exited the loop */
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
         s_task = NULL;
+        s_stop_waiter = NULL;
     }
 }
 
