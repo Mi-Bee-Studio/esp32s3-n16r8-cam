@@ -1,0 +1,76 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: espressif/idf:v6.0
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build firmware
+        run: |
+          . ${IDF_PATH}/export.sh
+          idf.py set-target esp32s3
+          idf.py build
+
+      - name: Package firmware
+        run: |
+          mkdir -p release
+          cp build/mibee_cam.bin release/
+          cp build/bootloader/bootloader.bin release/
+          cp build/partition_table/partition-table.bin release/
+          cp build/ota_data_initial.bin release/
+          cp build/spiffs.bin release/
+          cat > release/flash_command.txt << EOF
+          # MiBee Cam $GITHUB_REF_NAME — Full flash (replace PORT with your device)
+          #
+          # Flash all partitions at once:
+          esptool.py --chip esp32s3 -p PORT -b 460800 --before default-reset --after hard-reset write-flash \
+            0x0 bootloader.bin \
+            0x8000 partition-table.bin \
+            0x10000 mibee_cam.bin \
+            0xa10000 ota_data_initial.bin \
+            0xa12000 spiffs.bin
+
+          # Flash app only (fast, for upgrading):
+          # esptool.py --chip esp32s3 -p PORT -b 460800 --before default-reset --after hard-reset write-flash 0x10000 mibee_cam.bin
+          EOF
+
+      - name: Write release notes
+        run: |
+          cat > /tmp/release-body.md << RELEASED
+          ## $GITHUB_REF_NAME
+
+          ### Highlights
+          - *(Brief curated highlights — edit this section per release)*
+
+          ### Assets
+          - **mibee_cam.bin** — main firmware application (ota_0)
+          - **bootloader.bin** — S3 bootloader
+          - **partition-table.bin** — 16 MB partition table (dual OTA, SPIFFS)
+          - **ota_data_initial.bin** — initial OTA data at 0xa10000
+          - **spiffs.bin** — SPIFFS filesystem image
+          - **flash_command.txt** — pre-assembled esptool.py flash command
+
+          ---
+
+          *Full auto-generated changelog below.*
+          RELEASED
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          body_path: /tmp/release-body.md
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

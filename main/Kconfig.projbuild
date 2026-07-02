@@ -1,0 +1,105 @@
+menu "Camera Pin Configuration"
+
+    config CAMERA_PIN_PWDN
+        int "Camera pin PWDN"
+        default -1
+        help
+            GPIO number for camera power-down pin.
+
+    config CAMERA_PIN_RESET
+        int "Camera pin RESET"
+        default -1
+        help
+            GPIO number for camera reset pin.
+
+    config CAMERA_PIN_XCLK
+        int "Camera pin XCLK"
+        default 15
+        help
+            GPIO number for camera XCLK pin.
+
+    config CAMERA_PIN_SIOD
+        int "Camera pin SIOD (SCCB data)"
+        default 4
+        help
+            GPIO number for camera SCCB data pin.
+
+    config CAMERA_PIN_SIOC
+        int "Camera pin SIOC (SCCB clock)"
+        default 5
+        help
+            GPIO number for camera SCCB clock pin.
+
+    config CAMERA_PIN_D0
+        int "Camera pin D0"
+        default 11
+        help
+            GPIO number for camera data bit 0.
+
+    config CAMERA_PIN_D1
+        int "Camera pin D1"
+        default 9
+        help
+            GPIO number for camera data bit 1.
+
+    config CAMERA_PIN_D2
+        int "Camera pin D2"
+        default 8
+        help
+            GPIO number for camera data bit 2.
+
+    config CAMERA_PIN_D3
+        int "Camera pin D3"
+        default 10
+        help
+            GPIO number for camera data bit 3.
+
+    config CAMERA_PIN_D4
+        int "Camera pin D4"
+        default 12
+        help
+            GPIO number for camera data bit 4.
+
+    config CAMERA_PIN_D5
+        int "Camera pin D5"
+        default 18
+        help
+            GPIO number for camera data bit 5.
+
+    config CAMERA_PIN_D6
+        int "Camera pin D6"
+        default 17
+        help
+            GPIO number for camera data bit 6.
+
+    config CAMERA_PIN_D7
+        int "Camera pin D7"
+        default 16
+        help
+            GPIO number for camera data bit 7.
+
+    config CAMERA_PIN_VSYNC
+        int "Camera pin VSYNC"
+        default 6
+        help
+            GPIO number for camera VSYNC pin.
+
+    config CAMERA_PIN_HREF
+        int "Camera pin HREF"
+        default 7
+        help
+            GPIO number for camera HREF pin.
+
+    config CAMERA_PIN_PCLK
+        int "Camera pin PCLK"
+        default 13
+        help
+            GPIO number for camera PCLK pin.
+
+    config CAMERA_PSRAM_DMA
+        bool "Enable PSRAM DMA mode by default"
+        default n
+        help
+            Enable DMA transfers directly from PSRAM.
+
+endmenu
