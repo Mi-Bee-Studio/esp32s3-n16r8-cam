@@ -35,6 +35,8 @@ static const char *TAG = "web";
 
 static httpd_handle_t s_server = NULL;
 
+static void set_cors_headers(httpd_req_t *req);
+
 /* ------------------------------------------------------------------ */
 /*  JSON helpers                                                        */
 /* ------------------------------------------------------------------ */
@@ -58,8 +60,8 @@ esp_err_t json_ok(httpd_req_t *req, cJSON *data)
         httpd_resp_send(req, "JSON print failed", 17);
         return ESP_FAIL;
     }
+    set_cors_headers(req);
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_sendstr(req, json);
     free(json);
     return ESP_OK;
@@ -82,8 +84,8 @@ esp_err_t json_error(httpd_req_t *req, const char *msg, int status)
         httpd_resp_send(req, "JSON print failed", 17);
         return ESP_FAIL;
     }
+    set_cors_headers(req);
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_send_err(req, status, json);
     free(json);
     return ESP_FAIL;
@@ -106,6 +108,70 @@ char *read_body(httpd_req_t *req, size_t max_len)
     }
     buf[ret] = '\0';
     return buf;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Authentication helpers                                             */
+/* ------------------------------------------------------------------ */
+
+/* config_get_web_password() will be added to config_manager.c */
+extern const char *config_get_web_password(void);
+
+static bool check_auth(httpd_req_t *req)
+{
+    const char *stored_pass = config_get_web_password();
+    /* If no password is set, allow access (first-time setup) */
+    if (!stored_pass || stored_pass[0] == '\0') {
+        return true;
+    }
+    
+    /* Check X-Password header */
+    char password[128];
+    size_t password_len = sizeof(password) - 1;
+    esp_err_t ret = httpd_req_get_hdr_value_str(req, "X-Password", password, password_len);
+    if (ret != ESP_OK) {
+        return false;
+    }
+    password[password_len] = '\0';
+    
+    return strcmp(password, stored_pass) == 0;
+}
+
+static esp_err_t require_auth(httpd_req_t *req)
+{
+    const char *stored_pass = config_get_web_password();
+    
+    /* State A: No password set — only POST /api/config with web_password field allowed */
+    if (!stored_pass || stored_pass[0] == '\0') {
+        return json_error(req, "SET_PASSWORD_FIRST", HTTPD_401_UNAUTHORIZED);
+    }
+    
+    /* State B: Password is set — require X-Password header to match */
+    char password[128];
+    size_t password_len = sizeof(password) - 1;
+    esp_err_t ret = httpd_req_get_hdr_value_str(req, "X-Password", password, password_len);
+    if (ret != ESP_OK) {
+        return json_error(req, "unauthorized", HTTPD_401_UNAUTHORIZED);
+    }
+    password[password_len] = '\0';
+    
+    if (strcmp(password, stored_pass) != 0) {
+        return json_error(req, "unauthorized", HTTPD_401_UNAUTHORIZED);
+    }
+    
+    return ESP_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/*  CORS helpers                                                       */
+/* ------------------------------------------------------------------ */
+
+static void set_cors_headers(httpd_req_t *req)
+{
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Content-Type, X-Password");
+    httpd_resp_set_hdr(req, "Access-Control-Max-Age", "86400");
 }
 
 /* ------------------------------------------------------------------ */
@@ -143,8 +209,8 @@ static esp_err_t static_file_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
+    set_cors_headers(req);
     httpd_resp_set_type(req, type);
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
     char buf[4096];
     size_t n;
@@ -260,13 +326,32 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
     if (!body) {
         return json_error(req, "Empty or too large body", HTTPD_400_BAD_REQUEST);
     }
-
+    
     cJSON *json = cJSON_Parse(body);
     free(body);
     if (!json) {
         return json_error(req, "Invalid JSON", HTTPD_400_BAD_REQUEST);
     }
-
+    
+    /* Auth state machine */
+    const char *stored_pass = config_get_web_password();
+    bool password_empty = !stored_pass || stored_pass[0] == '\0';
+    
+    if (password_empty) {
+        /* State A: only allow if body contains web_password field */
+        cJSON *pw = cJSON_GetObjectItem(json, "web_password");
+        if (!pw || !cJSON_IsString(pw) || !pw->valuestring[0]) {
+            cJSON_Delete(json);
+            return json_error(req, "SET_PASSWORD_FIRST", HTTPD_401_UNAUTHORIZED);
+        }
+        /* Fall through — config_set will save the password */
+    } else {
+        /* State B: require X-Password header */
+        if (!check_auth(req)) {
+            cJSON_Delete(json);
+            return json_error(req, "unauthorized", HTTPD_401_UNAUTHORIZED);
+        }
+    }
     /* Iterate over known config keys and apply via config_set() */
     cJSON *item;
     int updated = 0;
@@ -330,6 +415,11 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
 
 static esp_err_t api_led_handler(httpd_req_t *req)
 {
+    esp_err_t ret = require_auth(req);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    
     char *body = read_body(req, 256);
     if (!body) {
         return json_error(req, "Empty or too large body", HTTPD_400_BAD_REQUEST);
@@ -373,6 +463,11 @@ static esp_err_t api_led_handler(httpd_req_t *req)
 
 static esp_err_t api_ai_handler(httpd_req_t *req)
 {
+    esp_err_t ret = require_auth(req);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    
     char *body = read_body(req, 512);
     if (!body) {
         return json_error(req, "Empty or too large body", HTTPD_400_BAD_REQUEST);
@@ -482,6 +577,34 @@ static esp_err_t ai_status_get_handler(httpd_req_t *req)
 }
 
 /* ------------------------------------------------------------------ */
+/*  GET /api/capabilities                                              */
+/* ------------------------------------------------------------------ */
+
+static esp_err_t api_capabilities_handler(httpd_req_t *req)
+{
+    cJSON *data = cJSON_CreateObject();
+    if (!data) {
+        return json_error(req, "Out of memory", HTTPD_500_INTERNAL_SERVER_ERROR);
+    }
+    
+    /* Per-board capability matrix (esp32s3-n16r8-cam) */
+    cJSON_AddBoolToObject(data, "ai",        true);   /* Has AI pipeline */
+    cJSON_AddBoolToObject(data, "sd",        false);  /* No SD card */
+    cJSON_AddBoolToObject(data, "audio",     false);  /* No audio */
+    cJSON_AddBoolToObject(data, "ota",       false);  /* No OTA web endpoint */
+    cJSON_AddBoolToObject(data, "mic",       false);  /* No mic */
+    cJSON_AddBoolToObject(data, "flash_led", true);   /* Has flash LED */
+    cJSON_AddBoolToObject(data, "recording", false);  /* No recording */
+    cJSON_AddBoolToObject(data, "timelapse", false);  /* No timelapse */
+    cJSON_AddBoolToObject(data, "onvif",     true);   /* Has ONVIF */
+    cJSON_AddBoolToObject(data, "rtsp",      true);   /* Has RTSP */
+    cJSON_AddBoolToObject(data, "websocket", false);  /* No WebSocket */
+    cJSON_AddBoolToObject(data, "mdns",      true);   /* Has mDNS */
+    
+    return json_ok(req, data);
+}
+
+/* ------------------------------------------------------------------ */
 /*  GET /camera                                                         */
 /* ------------------------------------------------------------------ */
 
@@ -511,6 +634,11 @@ static esp_err_t api_camera_get_handler(httpd_req_t *req)
 
 static esp_err_t api_camera_post_handler(httpd_req_t *req)
 {
+    esp_err_t ret = require_auth(req);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    
     char *body = read_body(req, 2048);
     if (!body) {
         return json_error(req, "Empty or too large body", HTTPD_400_BAD_REQUEST);
@@ -623,9 +751,7 @@ static esp_err_t api_camera_post_handler(httpd_req_t *req)
 
 static esp_err_t options_handler(httpd_req_t *req)
 {
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin",  "*");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Content-Type");
+    set_cors_headers(req);
     httpd_resp_send(req, NULL, 0);
     return ESP_OK;
 }
@@ -642,22 +768,21 @@ typedef struct {
 
 static const uri_entry_t s_uris[] = {
     /* Static files */
-    { "/",          HTTP_GET,     static_file_handler     },
-    /* MJPEG stream (async — spawns its own task) */
-    { "/stream",    HTTP_GET,     mjpeg_stream_handler    },
+    { "/",              HTTP_GET,     static_file_handler          },
     /* REST API */
-    { "/status",    HTTP_GET,     api_status_handler      },
-    { "/config",    HTTP_GET,     api_config_get_handler  },
-    { "/config",    HTTP_POST,    api_config_post_handler },
-    { "/led",       HTTP_POST,    api_led_handler         },
-    { "/ai",        HTTP_POST,    api_ai_handler          },
-    { "/ai/status", HTTP_GET,     ai_status_get_handler },
-    { "/camera",    HTTP_GET,     api_camera_get_handler  },
-    { "/camera",    HTTP_POST,    api_camera_post_handler },
+    { "/api/status",    HTTP_GET,     api_status_handler           },
+    { "/api/config",    HTTP_GET,     api_config_get_handler       },
+    { "/api/config",    HTTP_POST,    api_config_post_handler      },
+    { "/api/led",       HTTP_POST,    api_led_handler              },
+    { "/api/ai",        HTTP_POST,    api_ai_handler               },
+    { "/api/ai/status", HTTP_GET,     ai_status_get_handler        },
+    { "/api/camera",    HTTP_GET,     api_camera_get_handler       },
+    { "/api/camera",    HTTP_POST,    api_camera_post_handler      },
+    { "/api/capabilities", HTTP_GET,  api_capabilities_handler     },
     /* CORS preflight */
-    { "/*",         HTTP_OPTIONS, options_handler         },
+    { "/*",             HTTP_OPTIONS, options_handler              },
     /* Catch-all static files */
-    { "/*",         HTTP_GET,     static_file_handler     },
+    { "/*",             HTTP_GET,     static_file_handler          },
 };
 
 #define NUM_URIS (sizeof(s_uris) / sizeof(s_uris[0]))

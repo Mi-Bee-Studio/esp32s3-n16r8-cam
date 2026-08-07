@@ -29,6 +29,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "cJSON.h"
 
 /* ------------------------------------------------------------------ */
 /*  Constants                                                          */
@@ -51,6 +52,7 @@ typedef struct {
     bool    ai_qr_enable;
     char    rtsp_user[33];
     char    rtsp_pass[33];
+    char    web_password[65];
     bool    onvif_enable;
     int8_t  cam_brightness;   /* OV3660 brightness: -2..+2 */
     int8_t  cam_contrast;     /* OV3660 contrast: -2..+2 */
@@ -74,6 +76,7 @@ static const config_t s_defaults = {
     .ai_qr_enable    = true,
     .rtsp_user       = "admin",
     .rtsp_pass       = "admin",
+    .web_password    = "",
     .onvif_enable    = true,
     .cam_brightness  = 0,
     .cam_contrast    = 0,
@@ -115,6 +118,7 @@ static const key_entry_t s_keys[] = {
     { "ai_qr_enable",    TYPE_U8,     OFF_U8(ai_qr_enable)     },
     { "rtsp_user",       TYPE_STRING, OFF_STR(rtsp_user)       },
     { "rtsp_pass",       TYPE_STRING, OFF_STR(rtsp_pass)       },
+    { "web_password",   TYPE_STRING, OFF_STR(web_password)   },
     { "onvif_enable",    TYPE_U8,     OFF_U8(onvif_enable)     },
     { "cam_brightness", TYPE_I8, OFF_I8(cam_brightness) },
     { "cam_contrast",   TYPE_I8, OFF_I8(cam_contrast)   },
@@ -343,3 +347,44 @@ int8_t config_get_cam_saturation(void) { return s_config.cam_saturation; }
 int8_t config_get_cam_sharpness(void)  { return s_config.cam_sharpness; }
 bool   config_get_cam_hmirror(void)    { return s_config.cam_hmirror; }
 bool   config_get_cam_vflip(void)      { return s_config.cam_vflip; }
+const char *config_get_web_password(void) { return s_config.web_password; }
+
+cJSON *config_get_json(void)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        return NULL;
+    }
+
+    /* Camera settings */
+    cJSON_AddNumberToObject(root, "cam_framesize", s_config.cam_framesize);
+    cJSON_AddNumberToObject(root, "cam_quality", s_config.cam_quality);
+    cJSON_AddNumberToObject(root, "cam_brightness", s_config.cam_brightness);
+    cJSON_AddNumberToObject(root, "cam_contrast", s_config.cam_contrast);
+    cJSON_AddNumberToObject(root, "cam_saturation", s_config.cam_saturation);
+    cJSON_AddNumberToObject(root, "cam_sharpness", s_config.cam_sharpness);
+    cJSON_AddBoolToObject(root, "cam_hmirror", s_config.cam_hmirror);
+    cJSON_AddBoolToObject(root, "cam_vflip", s_config.cam_vflip);
+
+    /* WiFi */
+    cJSON_AddStringToObject(root, "wifi_ssid", s_config.wifi_ssid);
+    cJSON_AddStringToObject(root, "wifi_pass",
+                            s_config.wifi_pass[0] ? "****" : "");
+
+    /* AI */
+    cJSON_AddBoolToObject(root, "ai_face_enable", s_config.ai_face_enable);
+    cJSON_AddBoolToObject(root, "ai_motion_enable", s_config.ai_motion_enable);
+    cJSON_AddBoolToObject(root, "ai_qr_enable", s_config.ai_qr_enable);
+
+    /* RTSP / ONVIF */
+    cJSON_AddStringToObject(root, "rtsp_user", s_config.rtsp_user);
+    cJSON_AddStringToObject(root, "rtsp_pass",
+                            s_config.rtsp_pass[0] ? "****" : "");
+    cJSON_AddBoolToObject(root, "onvif_enable", s_config.onvif_enable);
+
+    /* Web auth */
+    cJSON_AddStringToObject(root, "web_password",
+                            s_config.web_password[0] ? "****" : "");
+
+    return root;
+}

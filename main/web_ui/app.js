@@ -118,7 +118,7 @@ function initTabs() {
 
 async function pollStatus() {
     try {
-        const data = await api('/status');
+        const data = await api('/api/status');
         document.getElementById('badge-ip').textContent = data.ip || '--';
         document.getElementById('badge-resolution').textContent = data.camera_resolution || '--';
         document.getElementById('badge-quality').textContent = String(data.camera_quality ?? '--');
@@ -151,7 +151,7 @@ async function pollStatus() {
 
 async function pollAI() {
     try {
-        const data = await api('/ai/status');
+        const data = await api('/api/ai/status');
         const canvas = document.getElementById('stream-overlay');
         const ctx = canvas.getContext('2d');
         const img = document.getElementById('stream-img');
@@ -201,7 +201,7 @@ let cameraSaveTimeout = null;
 
 async function loadCamera() {
     try {
-        const data = await api('/camera');
+        const data = await api('/api/camera');
         document.getElementById('cam-framesize').value = data.cam_framesize ?? 10;
         document.getElementById('cam-quality').value = data.cam_quality ?? 12;
         document.getElementById('cam-quality-val').textContent = data.cam_quality ?? 12;
@@ -242,7 +242,7 @@ function saveCamera() {
                 cam_hmirror: document.getElementById('cam-hmirror').classList.contains('active'),
                 cam_vflip: document.getElementById('cam-vflip').classList.contains('active'),
             };
-            await api('/camera', {
+            await api('/api/camera', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -301,7 +301,7 @@ async function saveAI() {
             motion: document.getElementById('ai-motion').classList.contains('active'),
             qr: document.getElementById('ai-qr').classList.contains('active'),
         };
-        await api('/ai', {
+        await api('/api/ai', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -322,7 +322,7 @@ function saveLED() {
     ledTimeout = setTimeout(async () => {
         try {
             const brightness = parseInt(document.getElementById('led-brightness').value);
-            await api('/led', {
+            await api('/api/led', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ brightness: brightness })
@@ -347,7 +347,7 @@ async function saveWiFi() {
             showToast(window.i18n.t('network.ssid_required'), 3000);
             return;
         }
-        await api('/config', {
+        await api('/api/config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -378,7 +378,7 @@ async function saveStreaming() {
         if (user) payload.rtsp_user = user;
         if (pass) payload.rtsp_pass = pass;
         payload.onvif_enable = onvif;
-        await api('/config', {
+        await api('/api/config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -396,13 +396,15 @@ function initStreamReconnect() {
     let reconnectDelay = 1000;
     const MAX_DELAY = 30000;
 
+    /* Initial connect: absolute URL to the independent MJPEG TCP server on :81 */
+    img.src = 'http://' + window.location.hostname + ':81/stream';
     img.addEventListener('error', () => {
         /* img may already have been refreshed; debounce */
         if (img._reconnecting) return;
         img._reconnecting = true;
 
         setTimeout(() => {
-            img.src = '/stream?' + Date.now();
+            img.src = 'http://' + window.location.hostname + ':81/stream?' + Date.now();
             img._reconnecting = false;
         }, reconnectDelay);
         reconnectDelay = Math.min(reconnectDelay * 1.5, MAX_DELAY);

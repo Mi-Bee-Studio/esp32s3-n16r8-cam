@@ -1,19 +1,17 @@
 /*
- * MiBee Cam v0.1 — MJPEG streamer over ESP HTTP Server
+ * MiBee Cam v0.1 — MJPEG streamer over independent TCP server
  *
  * Copyright (C) 2024 MiBee Cam Authors
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Serves GET /stream as multipart/x-mixed-replace via the esp_http_server.
- * Each client gets its own FreeRTOS task via the async request API.
+ * Serves MJPEG frames via a separate TCP server on port 81.
+ * Each client gets its own FreeRTOS task.
  * Maximum concurrent clients: 2.
  */
-
 #pragma once
 
 #include "esp_err.h"
-#include "esp_http_server.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -26,13 +24,14 @@ extern "C" {
 esp_err_t mjpeg_stream_init(void);
 
 /**
- * @brief Handler for GET /stream — register with httpd URI table.
+ * @brief Start the MJPEG TCP streaming server on the specified port.
+ * @param port TCP port to listen on (typically 81)
+ * @return ESP_OK or ESP_FAIL
  *
- * Creates an async request copy and spawns a FreeRTOS task that
- * streams JPEG frames via multipart/x-mixed-replace.
- * Handler returns immediately — does NOT block the httpd worker.
+ * Creates a listening socket and spawns a task that accepts connections.
+ * Each connection spawns a client task that streams MJPEG via multipart/x-mixed-replace.
  */
-esp_err_t mjpeg_stream_handler(httpd_req_t *req);
+esp_err_t mjpeg_stream_server_start(uint16_t port);
 
 /**
  * @brief Return current number of active MJPEG stream clients.

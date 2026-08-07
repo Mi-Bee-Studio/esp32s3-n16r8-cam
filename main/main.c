@@ -167,6 +167,14 @@ void app_main(void)
         } else {
             ESP_LOGE(TAG, "Web server start failed: %s", esp_err_to_name(http_err));
         }
+
+        /* ---- MJPEG streamer on port 81 (independent TCP server) ------- */
+        esp_err_t mjpeg_srv_err = mjpeg_stream_server_start(81);
+        if (mjpeg_srv_err == ESP_OK) {
+            ESP_LOGI(TAG, "MJPEG streamer running on port 81");
+        } else {
+            ESP_LOGE(TAG, "MJPEG streamer start failed: %s", esp_err_to_name(mjpeg_srv_err));
+        }
     }
 
     /* ---- 6. RTSP server (MJPEG-only, digest auth) --------------------- */
