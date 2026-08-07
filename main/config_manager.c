@@ -197,6 +197,12 @@ static esp_err_t read_i8_nvs(nvs_handle_t h, const key_entry_t *k)
 
 esp_err_t config_load(void)
 {
+    /* Prevent double-init: re-entry would leak the config mutex */
+    static bool s_config_loaded = false;
+    if (s_config_loaded) {
+        return ESP_OK;
+    }
+
     /* Start with defaults */
     memcpy(&s_config, &s_defaults, sizeof(s_config));
 
@@ -211,6 +217,7 @@ esp_err_t config_load(void)
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &h);
     if (err != ESP_OK) {
         ESP_LOGI(TAG, "No stored config, using defaults");
+        s_config_loaded = true;
         return ESP_OK;   /* defaults already applied */
     }
 
@@ -227,6 +234,7 @@ esp_err_t config_load(void)
 
     nvs_close(h);
     ESP_LOGI(TAG, "Config loaded from NVS");
+    s_config_loaded = true;
     return ESP_OK;
 }
 
