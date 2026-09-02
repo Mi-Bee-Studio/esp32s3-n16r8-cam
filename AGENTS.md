@@ -236,6 +236,12 @@ idf.py fullclean && idf.py set-target esp32s3 && idf.py build
 - **Serial port**: ESP32-S3 default USB-Serial/JTAG enumerates as `/dev/ttyACM0` (not `ttyUSB*`). Confirm with `ls /dev/serial/by-id/`.
 - **Baudrate**: 115200 (firmware default).
 - **Permission**: user must be in `uucp` (Arch) or `dialout` (Debian/Ubuntu).
+- **led_strip patch**: `patches/espressif__led_strip/` fixes a compile error (led_strip 2.5.5
+  uses `MALLOC_CAP_*` without including `esp_heap_caps.h` under IDF v6.0.1). The root
+  `CMakeLists.txt` copies it over `managed_components/` at configure time — source-only,
+  so fresh clones and CI get it automatically. Never edit files inside `managed_components/`
+  directly; edit the copy under `patches/`. If `idf.py fullclean` ever errors with a
+  managed-components hash mismatch, `rm -rf managed_components build` and rebuild.
 
 ## Verified Hardware Attributes
 
