@@ -18,6 +18,7 @@
 #include "rtsp_server.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "device_id.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -133,12 +134,8 @@ static esp_err_t handle_get_system_date_and_time(httpd_req_t *req)
 
 static esp_err_t handle_get_device_information(httpd_req_t *req)
 {
-    uint8_t mac[6] = {0};
-    esp_read_mac(mac, ESP_MAC_WIFI_STA);
-    char serial_no[24];
-    snprintf(serial_no, sizeof(serial_no),
-             "%02x%02x%02x%02x%02x%02x",
-             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    /* Stable serial derived once from factory eFuse MAC (WiFi-independent). */
+    const char *serial_no = device_get_serial();
 
     char resp[ONVIF_RESP_MAX];
     int len = snprintf(resp, sizeof(resp),
@@ -296,7 +293,7 @@ static esp_err_t handle_get_snapshot(httpd_req_t *req)
 
     char snapshot_uri[128];
     snprintf(snapshot_uri, sizeof(snapshot_uri),
-             "http://%s:80/stream/snapshot", ip_str);
+             "http://%s:80/api/capture", ip_str);
 
     char resp[ONVIF_RESP_MAX];
     int len = snprintf(resp, sizeof(resp),
