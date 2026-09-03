@@ -26,6 +26,7 @@
 #include "ai_pipeline.h"
 #include "camera_driver.h"
 #include "esp_spiffs.h"  /* for stat on SPIFFS files */
+#include "lwip/sockets.h"  /* setsockopt / TCP_NODELAY in on_session_open */
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -791,6 +792,27 @@ static const uri_entry_t s_uris[] = {
 /*  Public API                                                         */
 /* ------------------------------------------------------------------ */
 
+/* Set TCP_NODELAY + keepalive on every new HTTP connection.
+ * NODELAY: disable Nagle's algorithm so small HTTP writes (headers, MJPEG
+ * boundaries) aren't delayed by up to 1 RTT on marginal WiFi.
+ * KEEPALIVE: detect dead connections in ~11s (5s idle + 3×2s probes),
+ * freeing up limited server sockets for new clients. */
+static esp_err_t on_session_open(httpd_handle_t hd, int sockfd)
+{
+    int enable = 1;
+    setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable));
+
+    int keepalive = 1;
+    int keepidle  = 5;
+    int keepintvl = 2;
+    int keepcnt   = 3;
+    setsockopt(sockfd, SOL_SOCKET,  SO_KEEPALIVE,  &keepalive, sizeof(keepalive));
+    setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPIDLE,  &keepidle,  sizeof(keepidle));
+    setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPINTVL, &keepintvl, sizeof(keepintvl));
+    setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPCNT,   &keepcnt,   sizeof(keepcnt));
+    return ESP_OK;
+}
+
 esp_err_t web_server_start(uint16_t port)
 {
     if (s_server) {
@@ -808,6 +830,7 @@ esp_err_t web_server_start(uint16_t port)
     config.send_wait_timeout  = 10;
     config.keep_alive_enable  = false;
     config.lru_purge_enable   = true;
+    config.open_fn            = on_session_open;  /* TCP_NODELAY + keepalive per socket */
 
     esp_err_t ret = httpd_start(&s_server, &config);
     if (ret != ESP_OK) {
