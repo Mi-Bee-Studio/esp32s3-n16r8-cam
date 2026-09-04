@@ -694,22 +694,27 @@ static esp_err_t api_camera_get_handler(httpd_req_t *req)
     cJSON_AddBoolToObject(data,   "cam_vflip",      config_get_cam_vflip());
     cJSON_AddStringToObject(data, "resolution", camera_framesize_name(config_get_cam_framesize()));
 
-    /* 契约 v1.0：分辨率列表动态下发（esp32-camera framesize_t 刻度 0-15） */
+    /* 契约 v1.0：分辨率列表动态下发（esp32-camera framesize_t 刻度）。
+     * 三层上限（2026-09-04 家族统一）：sensor ∩ board ∩ memory，
+     * 上限历史依据（SVGA 稳定/XGA 起冷启动取帧死）见 camera_driver.h。 */
     {
-        static const struct { int value; const char *label; } res_list[] = {
-            /* 板级实测（2026-09-04 复测，PIT-021/022）：SVGA 稳定、XGA 起
-             * 冷启动取帧死。含污染链翻案全过程见 camera_driver.h 注释。 */
-            { 10, "VGA (640x480)" },
-            { 11, "SVGA (800x600)" },
+        static const char *res_labels[] = {
+            [10] "VGA (640x480)",  [11] "SVGA (800x600)",
+            [12] "XGA (1024x768)", [13] "HD (1280x720)",
+            [14] "SXGA (1280x1024)", [15] "UXGA (1600x1200)",
         };
+        int eff_max = camera_get_effective_max_res();
         cJSON *res_arr = cJSON_CreateArray();
-        for (size_t i = 0; i < sizeof(res_list) / sizeof(res_list[0]); i++) {
+        for (int fs = 10; fs <= eff_max && fs < (int)(sizeof(res_labels) / sizeof(res_labels[0])); fs++) {
+            if (!res_labels[fs]) continue;
             cJSON *item = cJSON_CreateObject();
-            cJSON_AddStringToObject(item, "label", res_list[i].label);
-            cJSON_AddNumberToObject(item, "value", res_list[i].value);
+            cJSON_AddStringToObject(item, "label", res_labels[fs]);
+            cJSON_AddNumberToObject(item, "value", fs);
             cJSON_AddItemToArray(res_arr, item);
         }
         cJSON_AddItemToObject(data, "supported_resolutions", res_arr);
+        /* 契约扩展（2026-09-04）：上限被哪一层钳制（sensor/board/memory） */
+        cJSON_AddStringToObject(data, "res_cap_source", camera_res_cap_source());
     }
 
     return json_ok(req, data);
@@ -756,8 +761,8 @@ static esp_err_t api_camera_post_handler(httpd_req_t *req)
             cJSON_Delete(json);
             char msg[96];
             snprintf(msg, sizeof(msg),
-                "cam_framesize %d exceeds board max %d (measured, PIT-021)",
-                val, camera_get_effective_max_res());
+                "cam_framesize %d exceeds effective max %d (source: %s, PIT-021)",
+                val, camera_get_effective_max_res(), camera_res_cap_source());
             return json_error(req, msg, HTTPD_400_BAD_REQUEST);
         }
         /* AI safety check — reject non-VGA if any AI feature is enabled */

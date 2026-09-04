@@ -24,22 +24,27 @@
 #define CAMERA_QUALITY_MIN 10
 #define CAMERA_QUALITY_MAX 63
 
-/* 板级分辨率上限（2026-09-04 两轮上板复测 + 双网复核，PIT-021/022 流程）：
- * **SVGA(11) 稳定，XGA(12) 起致命**。XGA 楔死在主网(GT)与备用网(MiBeeAP2)
- * 上完全一致（采集侧 fb_get NULL，与网络无关）。注意：推流 delivered fps
- * 是链路/NVR 订阅数约束的投递侧指标（实测 0.5-0.8fps 时板端采集仍 25-27fps，
- * 见 fbroadcast 日志）——判定上限只看采集侧。
- *   VGA：640×480 实拍确认，推流/取帧正常；
- *   SVGA：冷启动后传感器真实输出 800×600（JPEG SOF 实测），帧流正常；
- *   XGA+：冷启动即 esp_camera_fb_get 返回 NULL，取帧死，且会令板子楔死
- *   （ai 任务 wdt 未登记空转刷错，另修）。PSRAM 8MB 充裕——这是模组/
- *   传感器/DVP 组合的极限，不是内存问题，勿调 fb 参数强上。
+/* ── 分辨率三层上限（2026-09-04 家族统一，PIT-021 附录）──────────────
+ * effective = min(传感器上限, 板级实测上限, 运行时 fb 预算)，刻度是
+ * esp32-camera framesize_t 原始枚举（VGA=10 … 5MP=24）：
+ *  1. sensor  — 组件自动检测（camera_sensor_info_t.max_size，本模组
+ *               OV3660→QXGA=19），换传感器候选表自适应收缩；
+ *  2. board   — 本板实测常数（唯一手工数字，禁止沿用姐妹板数值）：
+ *               2026-09-04 两轮上板复测 + 双网复核，**SVGA(11) 稳定，
+ *               XGA(12) 起致命**（XGA 冷启动即 fb_get NULL 楔死整板，
+ *               GT/MiBeeAP2 双网一致，采集侧判定；PSRAM 8MB 充裕，是
+ *               模组/传感器/DVP 组合极限而非内存问题）；
+ *  3. memory  — 运行时 fb 预算校验（宽*高/5*fb_count + floor ≤ 可用
+ *               PSRAM），只能收紧，防御 PSRAM 退化态。
  * 历史教训：首轮“仅 VGA”结论被两条污染链毁掉（NVS 键名 16 字符令
  * config_save 整体失败 → “关 AI”存不住 → AI 强制 VGA 钳制每晨复活；
  * 加上校验写成 `!=max` 单值锁）。详见 PIT-021/022。
- * 家族纪律：禁止沿用姐妹板数值。 */
+ * /api/camera 下发 res_cap_source 报告被哪一层钳制（诊断用）。 */
 #define CAMERA_RES_BOARD_MAX 11   /* FRAMESIZE_SVGA */
 int camera_get_effective_max_res(void);
+
+/** @brief 上限被哪一层钳制（sensor / board / memory），静态字符串 */
+const char *camera_res_cap_source(void);
 
 #ifdef __cplusplus
 extern "C" {

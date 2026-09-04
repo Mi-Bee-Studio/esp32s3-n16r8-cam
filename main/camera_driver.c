@@ -17,6 +17,7 @@
 #include "ai_pipeline.h"
 #include "esp_log.h"
 #include "esp_err.h"
+#include "esp_heap_caps.h"
 #include <string.h>
 static const char *TAG = "camera_drv";
 
@@ -58,22 +59,96 @@ static const camera_config_t s_camera_cfg = {
 };
 
 /* ------------------------------------------------------------------ */
-/*  camera_init()                                                      */
+/*  三层分辨率上限（sensor ∩ board ∩ memory，PIT-021 附录）            */
 /* ------------------------------------------------------------------ */
+
+/* memory 层：esp32-camera 的 JPEG fb 按 宽*高/5 分配（cam_hal 同式），
+ * 预算 = fb_size * fb_count，分完后须仍留 floor 给 lwIP 大缓冲等消费者。
+ * 只能收紧上限（防御 PSRAM 退化态），不会把 effective 放宽超过实测常数。 */
+#define CAMERA_FB_COUNT      2     /* 与 s_camera_cfg 一致 */
+#define CAMERA_RES_MEM_FLOOR (512 * 1024)
+
+static bool s_camera_inited = false;
+static const char *s_cap_source = "board";
+
+/* framesize → 尺寸表，下标 0 对应 FRAMESIZE_VGA（钉死 esp32-camera 2.1.x
+ * 枚举序；组件枚举漂移时由 _Static_assert 在构建期暴露） */
+static const struct { uint16_t w, h; } s_fs_dims[] = {
+    { 640,  480},  { 800,  600},  {1024,  768},  {1280,  720},  {1280, 1024},
+    {1600, 1200},  {1920, 1080},  { 720, 1280},  { 864, 1536},  {2048, 1536},
+    {2560, 1440},  {2560, 1600},  {1080, 1920},  {2560, 1920},  {2592, 1944},
+};
+_Static_assert(FRAMESIZE_VGA == 10, "s_fs_dims pinned to esp32-camera 2.1.x enum");
+
+static size_t fb_bytes_for_fs(int fs)
+{
+    int idx = fs - (int)FRAMESIZE_VGA;
+    if (idx < 0 || (size_t)idx >= sizeof(s_fs_dims) / sizeof(s_fs_dims[0])) {
+        return 0;
+    }
+    return (size_t)s_fs_dims[idx].w * s_fs_dims[idx].h / 5;
+}
+
+static bool fb_budget_ok(int fs)
+{
+    size_t need = fb_bytes_for_fs(fs) * CAMERA_FB_COUNT;
+    size_t cur_fb = s_camera_inited
+        ? fb_bytes_for_fs((int)config_get_cam_framesize()) * CAMERA_FB_COUNT : 0;
+    size_t avail = heap_caps_get_free_size(MALLOC_CAP_SPIRAM) + cur_fb;
+    return need != 0 && avail >= need + CAMERA_RES_MEM_FLOOR;
+}
+
+/** sensor 层：查 esp32-camera 组件自带能力表（单一事实源，勿手抄 PID 表）。
+ *  未初始化/未知 PID → 回退板级常数（不放宽）。 */
+static int sensor_max_framesize(void)
+{
+    sensor_t *s = esp_camera_sensor_get();
+    camera_sensor_info_t *info = s ? esp_camera_sensor_get_info(&s->id) : NULL;
+    if (info && (int)info->max_size >= (int)FRAMESIZE_VGA) {
+        return (int)info->max_size;
+    }
+    if (s) {
+        ESP_LOGW(TAG, "Unknown sensor PID 0x%04X — sensor layer falls back to board max",
+                 s->id.PID);
+    }
+    return CAMERA_RES_BOARD_MAX;
+}
 
 int camera_get_effective_max_res(void)
 {
-    return CAMERA_RES_BOARD_MAX;
+    int sensor_cap = sensor_max_framesize();
+    int board_cap  = CAMERA_RES_BOARD_MAX;
+    int cap = (sensor_cap < board_cap) ? sensor_cap : board_cap;
+    while (cap > (int)FRAMESIZE_VGA && !fb_budget_ok(cap)) {
+        cap--;
+    }
+    if (cap == sensor_cap) {
+        s_cap_source = "sensor";
+    } else if (cap == board_cap) {
+        s_cap_source = "board";
+    } else {
+        s_cap_source = "memory";
+    }
+    return cap;
 }
+
+const char *camera_res_cap_source(void)
+{
+    return s_cap_source;
+}
+
+/* ------------------------------------------------------------------ */
+/*  camera_init()                                                      */
+/* ------------------------------------------------------------------ */
 
 esp_err_t camera_init(void)
 {
     /* Read config values */
     uint8_t framesize = config_get_cam_framesize();
-    if (framesize > CAMERA_RES_BOARD_MAX) {
-        ESP_LOGW(TAG, "Config framesize=%u exceeds board max — clamping (PIT-021)",
-                 framesize);
-        framesize = CAMERA_RES_BOARD_MAX;
+    if (framesize > camera_get_effective_max_res()) {
+        ESP_LOGW(TAG, "Config framesize=%u exceeds effective max %d (source: %s) — clamping (PIT-021)",
+                 framesize, camera_get_effective_max_res(), camera_res_cap_source());
+        framesize = (uint8_t)camera_get_effective_max_res();
     }
     uint8_t quality = config_get_cam_quality();
     if (quality < CAMERA_QUALITY_MIN) quality = CAMERA_QUALITY_MIN;
@@ -101,7 +176,11 @@ esp_err_t camera_init(void)
 
     ESP_LOGI(TAG, "esp_camera_init() OK — probing sensor ID");
 
-    /* ---- Verify sensor is OV3660 (PID 0x77) --------------------- */
+    /* ---- 传感器身份：查组件能力表（单一事实源）-------------------
+     * 2026-09-04 纠偏：本模组实测 PID=0x3660（组件表 OV3660 项），历史
+     * 注释/文档里的"PID=0x77"是错的（0x77 是 OV7725）。能力上限由
+     * camera_get_effective_max_res() 的 sensor 层给出——换接其他传感器
+     * （如 OV2640）不再硬拒，候选表自动收缩。 */
     sensor_t *sensor = esp_camera_sensor_get();
     if (sensor == NULL) {
         ESP_LOGE(TAG, "esp_camera_sensor_get() returned NULL");
@@ -111,17 +190,19 @@ esp_err_t camera_init(void)
     uint16_t pid = sensor->id.PID;
     ESP_LOGI(TAG, "Sensor PID: 0x%04X  MID: 0x%02X:%02X", pid, sensor->id.MIDH, sensor->id.MIDL);
 
-    if (pid == 0x77) {
-        ESP_LOGI(TAG, "OV3660 sensor confirmed (PID=0x77)");
-    } else if (pid == 0x26 || pid == 0x42) {
-        ESP_LOGE(TAG, "OV2640 detected (PID=0x%02X) — expected OV3660 (0x77)", pid);
-        return ESP_ERR_INVALID_VERSION;
+    camera_sensor_info_t *info = esp_camera_sensor_get_info(&sensor->id);
+    if (info) {
+        ESP_LOGI(TAG, "Sensor confirmed: %s (PID 0x%04X, sensor max framesize=%d)",
+                 info->name, info->pid, (int)info->max_size);
     } else {
-        ESP_LOGW(TAG, "Unknown sensor PID=0x%04X — continuing anyway", pid);
+        ESP_LOGW(TAG, "Unknown sensor PID=0x%04X — continuing, sensor layer falls back to board max",
+                 pid);
     }
 
     /* Apply sensor settings from config */
     camera_apply_sensor_settings();
+
+    s_camera_inited = true;
 
     return ESP_OK;
 }
@@ -182,9 +263,10 @@ void camera_apply_sensor_settings(void)
 
 esp_err_t camera_reinit(uint8_t framesize, uint8_t quality)
 {
-    if (framesize > CAMERA_RES_BOARD_MAX) {
-        ESP_LOGW(TAG, "reinit framesize=%u exceeds board max — clamping", framesize);
-        framesize = CAMERA_RES_BOARD_MAX;
+    if (framesize > camera_get_effective_max_res()) {
+        ESP_LOGW(TAG, "reinit framesize=%u exceeds effective max %d (source: %s) — clamping",
+                 framesize, camera_get_effective_max_res(), camera_res_cap_source());
+        framesize = (uint8_t)camera_get_effective_max_res();
     }
     if (quality < CAMERA_QUALITY_MIN) quality = CAMERA_QUALITY_MIN;
     if (quality > CAMERA_QUALITY_MAX) quality = CAMERA_QUALITY_MAX;
@@ -202,6 +284,7 @@ esp_err_t camera_reinit(uint8_t framesize, uint8_t quality)
     frame_broadcaster_stop();
 
     /* 2. Deinit camera */
+    s_camera_inited = false;
     esp_err_t deinit_err = esp_camera_deinit();
     if (deinit_err != ESP_OK) {
         ESP_LOGE(TAG, "esp_camera_deinit() failed: %s", esp_err_to_name(deinit_err));
@@ -236,6 +319,7 @@ esp_err_t camera_reinit(uint8_t framesize, uint8_t quality)
 
     /* 5. Apply sensor settings */
     camera_apply_sensor_settings();
+    s_camera_inited = true;
 
     /* 6. Restart broadcaster */
     frame_broadcaster_start();
@@ -295,20 +379,17 @@ const char *camera_framesize_name(uint8_t framesize)
     }
 }
 
-/** @brief 返回检测到的传感器型号字符串（契约 v1.0: status.camera 字段） */
+/** @brief 返回检测到的传感器型号字符串（契约 v1.0: status.camera 字段）
+ *  2026-09-04：改查组件能力表取名——旧手抄映射把 OV3660 标成 PID 0x77
+ *  （实际 0x3660，0x77 是 OV7725），导致实戴传感器上报 "unknown"。 */
 const char *camera_sensor_name(void)
 {
     sensor_t *sensor = esp_camera_sensor_get();
     if (!sensor) {
         return "unknown";
     }
-    switch (sensor->id.PID) {
-        case 0x26:
-        case 0x42:  return "OV2640";
-        case 0x77:  return "OV3660";
-        case 0x5640: return "OV5640";
-        default:     return "unknown";
-    }
+    camera_sensor_info_t *info = esp_camera_sensor_get_info(&sensor->id);
+    return info ? info->name : "unknown";
 }
 
 bool camera_framesize_is_vga(uint8_t framesize)

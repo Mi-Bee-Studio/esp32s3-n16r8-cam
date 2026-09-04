@@ -444,3 +444,20 @@ NVS 观察项：连续 AT 改 AI 键后出现 `Failed to write NVS key 'ai_motio
   采集侧**（fb_get 是否出帧 + JPEG SOF 实测尺寸），勿用投递 fps 做依据。
 - 实测 MiBeeAP2 板位 RTT 仍 ~50-220ms——.119 位置的射频环境两网都一般，
   网络调优（挪信道/关 HT40）仍是独立课题。
+
+## 2026-09-04 分辨率三层上限（家族统一）+ 传感器身份纠偏
+
+- **三层化**：`camera_get_effective_max_res() = min(sensor, board, memory)`
+  （camera_driver.c，细节见 PITFALLS PIT-021 附录）。sensor 层查组件能力表
+  （`esp_camera_sensor_get_info().max_size`，OV3660→QXGA=19）；board 层
+  `CAMERA_RES_BOARD_MAX=11/SVGA`（双网实测，不变）；memory 层 PSRAM fb 预算
+  （512K floor，只能收紧）。`GET /api/camera` 下发 `res_cap_source`；
+  supported_resolutions 由静态表改为按 effective 循环生成；AT+CAMRES 同步。
+  本板满配不变（10-11、source=board）。
+- **传感器身份纠偏（顺带修复）**：本仓曾把 OV3660 的 PID 误记为 **0x77**
+  （0x77 其实是 OV7725；组件对 OV3660 只认 **0x3660**——`ov3660_detect` 读
+  0x300A/0x300B 比对）。后果：`camera_sensor_name()` 的手抄映射对实戴传感器
+  返回 "unknown"，camera_init 的 "PID=0x77 confirmed" 分支永不命中。
+  已改查组件表取名/确认；camera_init 不再硬拒 OV2640（换传感器由 sensor
+  层自动收缩候选，符合家族"换板/换传感器自适应"方向）。硬件表中"Sensor ID:
+  0x77"为误记，勿再引用。

@@ -367,9 +367,10 @@ static void cmd_camqual(const char *p)
 static void cmd_camres(const char *p)
 {
     if (!p || p[0] == '?' || p[0] == '\0') {
-        printf("Frame size index: %u  (board max: %u, PIT-021)\r\n",
+        printf("Frame size index: %u  (cap: %u, source: %s, PIT-021)\r\n",
                (unsigned)config_get_cam_framesize(),
-               (unsigned)camera_get_effective_max_res());
+               (unsigned)camera_get_effective_max_res(),
+               camera_res_cap_source());
         printf("OK\r\n");
         return;
     }
@@ -378,10 +379,10 @@ static void cmd_camres(const char *p)
         printf("ERROR: frame size index out of range (0-15)\r\n");
         return;
     }
-    /* 板级上限：区间校验（PIT-022 修正：此前单值锁定是污染结论的帮凶） */
+    /* 三层上限：区间校验（PIT-022 修正：此前单值锁定是污染结论的帮凶） */
     if (n > camera_get_effective_max_res()) {
-        printf("ERROR: exceeds board max %d (measured)\r\n",
-               camera_get_effective_max_res());
+        printf("ERROR: exceeds effective max %d (source: %s)\r\n",
+               camera_get_effective_max_res(), camera_res_cap_source());
         return;
     }
     /* AI 管线硬编码 VGA：非 VGA + 任一 AI 开启 → 拒绝（同 web） */
