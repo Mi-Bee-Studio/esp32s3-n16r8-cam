@@ -129,3 +129,13 @@ esp_err_t flash_led_off(void)
 {
     return flash_led_set_brightness(0);
 }
+
+/** @brief 读取当前闪光灯亮度百分比（未初始化返回 0） */
+uint8_t flash_led_get_brightness(void)
+{
+    if (!s_initialized) {
+        return 0;
+    }
+    return (uint8_t)((ledc_get_duty(s_channel.speed_mode, s_channel.channel) * 100)
+                     / FLASH_LED_DUTY_MAX);
+}

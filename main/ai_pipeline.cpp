@@ -334,21 +334,25 @@ static void ai_task(void *arg)
         return;
     }
 
-    /* Register with task watchdog */
+    /* Register with task watchdog — 登记失败时必须跳过后续 reset()，
+     * 否则每 10ms 刷一条 "esp_task_wdt_reset: task not found"
+     * （2026-09-04 XGA 楔死时实测 ~100Hz 刷屏，淹掉一切有效日志） */
     esp_err_t wdt_err = esp_task_wdt_add(NULL);
-    if (wdt_err != ESP_OK) {
-        ESP_LOGW(TAG, "esp_task_wdt_add failed: %s", esp_err_to_name(wdt_err));
+    const bool wdt_ok = (wdt_err == ESP_OK);
+    if (!wdt_ok) {
+        ESP_LOGW(TAG, "esp_task_wdt_add failed: %s (continuing without WDT)",
+                 esp_err_to_name(wdt_err));
     }
 
     /* ---- Processing loop ---------------------------------------- */
     while (s_ai_running) {
         /* Reset watchdog before potentially blocking on get_frame */
-        esp_task_wdt_reset();
+        if (wdt_ok) esp_task_wdt_reset();
 
         frame_msg_t msg;
         if (!frame_broadcaster_get_frame(s_ai_sub, &msg)) {
             /* No frame yet — yield briefly */
-            esp_task_wdt_reset();
+            if (wdt_ok) esp_task_wdt_reset();
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
@@ -381,7 +385,7 @@ static void ai_task(void *arg)
     frame_broadcaster_unsubscribe(s_ai_sub);
     s_ai_sub = NULL;
 
-    esp_task_wdt_delete(NULL);
+    if (wdt_ok) esp_task_wdt_delete(NULL);
 
     ESP_LOGI(TAG, "AI task stopped");
     s_ai_task = NULL;

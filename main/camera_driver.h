@@ -14,6 +14,30 @@
 
 #include "esp_camera.h"
 
+/* JPEG quality bounds (lower = better quality / larger frames) — driver
+ * invariant, applies to every board using esp32-camera: JPEG frame buffers
+ * are sized w*h/5 (max 1:5 compression), q<10 overflows that budget on
+ * complex scenes and produces truncated frames (family finding 2026-09-04,
+ * PITFALLS PIT-021; validated on ai-thinker/seeed/luatos hardware).
+ * NOTE: resolution cap for THIS board is not yet measured — do not copy
+ * sister-board caps; measure on hardware before restricting 0-15. */
+#define CAMERA_QUALITY_MIN 10
+#define CAMERA_QUALITY_MAX 63
+
+/* 板级分辨率上限（2026-09-04 两轮上板复测，PIT-021/022 流程）：
+ * **SVGA(11) 稳定，XGA(12) 起致命**。
+ *   VGA：640×480 实拍确认，推流/取帧正常；
+ *   SVGA：冷启动后传感器真实输出 800×600（JPEG SOF 实测），帧流正常；
+ *   XGA+：冷启动即 esp_camera_fb_get 返回 NULL，取帧死，且会令板子楔死
+ *   （ai 任务 wdt 未登记空转刷错，另修）。PSRAM 8MB 充裕——这是模组/
+ *   传感器/DVP 组合的极限，不是内存问题，勿调 fb 参数强上。
+ * 历史教训：首轮“仅 VGA”结论被两条污染链毁掉（NVS 键名 16 字符令
+ * config_save 整体失败 → “关 AI”存不住 → AI 强制 VGA 钳制每晨复活；
+ * 加上校验写成 `!=max` 单值锁）。详见 PIT-021/022。
+ * 家族纪律：禁止沿用姐妹板数值。 */
+#define CAMERA_RES_BOARD_MAX 11   /* FRAMESIZE_SVGA */
+int camera_get_effective_max_res(void);
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -72,6 +96,11 @@ const char *camera_framesize_name(uint8_t framesize);
  *        FRAMESIZE_VGA = 10 in esp32-camera framesize_t enum.
  */
 bool camera_framesize_is_vga(uint8_t framesize);
+
+/**
+ * @brief Detected sensor model string ("OV2640"/"OV3660"/"OV5640"/"unknown").
+ */
+const char *camera_sensor_name(void);
 
 #ifdef __cplusplus
 }

@@ -2,6 +2,13 @@
 
 > Firmware project for an ESP32-S3-N16R8 module + OV3660 camera. **Production-ready** with MJPEG streaming, AI detection, RTSP, ONVIF, and responsive web UI.
 
+## AT command interface (family contract v1.0, 2026-09-04)
+
+统一契约：`docs/at-command.md`（四仓 md5 一致，地位同 api-contract）。核心集：
+`AT / AT+HELP / AT+GMR / AT+STATUS / AT+WIFI?|= / AT+IP? / AT+CAMRES?|= / AT+CAMQUAL?|= /
+AT+REBOOT / AT+RESTORE`（+能力裁剪项）。红线：**任何读指令不回显密码**；CAMQUAL 边界
+10-63（PIT-021）。本板串口 /dev/ttyUSB1（CH340）。CAMRES/CAMQUAL 走 camera_reinit 热重配（AI 全开时锁 VGA）；实现于 main/at_command.c（含 AI/LED/RTSPPASS 扩展）。
+
 ## Hardware target
 
 | Item | Value | Notes |
@@ -68,6 +75,21 @@ The firmware is production-ready with the following modules and features:
 
 ### REST API Endpoints
 
+> **2026-09-02 契约 v1.0 统一化**（权威规范：`docs/api-contract.md`，下表已过时）：
+> 新增核心端点 `GET /api/capture`、`GET /api/scan`、`POST /api/reset`、`POST /api/reboot`、
+> `POST /api/time`、`GET /api/auth`、`GET /metrics`、`GET /api/led`；
+> `POST /api/camera` framesize 合法域收窄为 0-15（与广播的 `supported_resolutions` 一致）；
+> capabilities 增加 `api_version`/`wifi_scan`；status 字段对齐契约
+> （`camera_resolution`→`resolution`、`mjpeg_clients`→`stream_clients`，新增 `camera`/`device_name`/
+> `firmware_version`/`wifi_state`/`min_heap`/`stream_clients_max`）；config 新增 `device_name` 键。
+> **RTSP 鉴权已启用**：vendored `components/espp__rtsp`（自 seeed 复制，含 digest 补丁）+
+> 直接依赖 `espp/base_component|socket|task`（idf_component.yml 已改，勿再加 espp/rtsp）。
+> ONVIF GetSnapshotUri 已指向 `:80/api/capture`。
+>
+> **契约 v1.1（2026-09-02）**：移植 seeed `ota_updater`（`/api/ota`、`/api/ota/info`、
+> `/api/ota/upload`、`/api/ota/spiffs`），`ota:true`；统一默认密码 `***REMOVED-DEFAULT-PASSWORD***`、拒绝 <6 位密码；
+> 修复首次设密未持久化 bug（`known_keys` 白名单曾漏 `web_password`）；api_version=1.1。
+
 All business endpoints use the `/api/` prefix. Returns JSON envelope `{"ok":true,"data":...}` on success, `{"ok":false,"error":"..."}` on failure.
 
 | Method | Path | Auth | Description |
@@ -92,6 +114,11 @@ All business endpoints use the `/api/` prefix. Returns JSON envelope `{"ok":true
 **Exempt paths:** `/onvif/*` (SOAP) are not under `/api/`.
 
 ### Web UI Features
+
+> **2026-09-02 UI v3 "Honey"**（与 seeed/luatos md5 一致的单一源）：蜂蜜琥珀主题、暗色优先、
+> 视频主舞台 + 玻璃控制条 + 指标 chips + 分段式控制台、鉴权抽屉（401 自动唤起并重试）、
+> 模态确认、按钮忙态、断流骨架屏。设计令牌集中在 style.css 顶部，规范以 seeed 仓为准。
+> 下方旧描述的组件清单已部分过时。
 
 Single-page application served from SPIFFS. Four files:
 - `index.html` — page structure
@@ -346,6 +373,29 @@ idf.py fullclean && idf.py set-target esp32s3 && idf.py build
 - `mjpeg_streamer` and `ai_pipeline` subscribe
 - Allows multiple consumers without frame duplication
 
+## Camera limits measured (2026-09-04, on-board) — VGA-only module
+
+**实测**（PIT-021 流程：web 热重配 + 冷启动双路径 + capture 计时）：
+- VGA(10)：26fps 广播 / 0.33s capture / 零故障 —— **板级上限，已全链路锁定**
+- SVGA(11)/XGA(12)：热重配后 capture 死（0B，间或出一帧）
+- HD(13)+：`cam_hal: FB-OVF` 风暴、httpd 楔死；**冷启动存 HD 配置时传感器输出仍是
+  VGA**（配置与实际脱节——GET 谎报 resolution 的隐患源）
+落地：`CAMERA_RES_BOARD_MAX=10`（camera_driver.h）+ `camera_get_effective_max_res()`；
+supported_resolutions/POST/AT+CAMRES/camera_init/camera_reinit/NVS 加载全部收敛 VGA。
+推流仅 ~0.4fps：本板 ch11 HT40 弱态网络所致（TCP 窗口已提至家族值 49152/32768 无感、
+AMPDU 重开实验无增益且伴一次失联——已回退 =n，调优候选是挪信道/关 HT40）。
+NVS 观察项：连续 AT 改 AI 键后出现 `Failed to write NVS key 'ai_motion_enable'`（运行时生效、持久化失败）——待查 NVS 页空间。
+
+## Camera quality bounds (2026-09-04, applied)
+
+- `CAMERA_QUALITY_MIN/MAX = 10/63`（camera_driver.h，驱动不变量：esp32-camera
+  JPEG fb 按 w*h/5 分配，q<10 复杂场景超预算截帧，PITFALLS PIT-021）。POST
+  /api/camera 与 POST /api/config（白名单键）越界 400；camera init/reinit 钳制；
+  GET /api/camera 新增 `quality_min/quality_max`（SPA 滑杆钳制，四仓 app.js 已同步）。
+- 分辨率上限见上节：**VGA-only**（同日上板实测后锁定）。
+- 本仓树上有未完成的 OTA 移植 WIP（web_server.c 引用未跟踪的 ota_updater.c/h），
+  以上改动未提交，随 OTA 收尾会话一并处理（PIT-018 纪律）。
+
 ## Do NOT
 
 - Copy `partitions.csv` or pin numbers from the reference repos verbatim — flash size and board differ.
@@ -362,3 +412,16 @@ idf.py fullclean && idf.py set-target esp32s3 && idf.py build
 - Partition change → re-flash the partition table at `0x8000`, not just the app.
 - Web UI change → rebuild spiffs.bin and re-flash partition.
 - REST API change → build + flash + test endpoints manually.
+
+## 2026-09-04 上午：NVS 键名红线 + AI/VGA 污染链（PIT-022）
+- **NVS 键 ≤15 字符**：`ai_motion_enable`(16) 曾令 `config_save()` 整体失败（遇错即返回），
+  其后所有键永不落盘——"AT 关 AI 重启复活"即此。键已改 `ai_motion_en`（JSON 字段名不变）。
+  at_command.c / web_server.c 写键的字符串必须与 config_manager.c `s_keys[]` 完全一致，
+  config_set 未知键现在会打 WARN。
+- **AI 与 VGA 强耦合是事实上的默认态**：AI 任一开启 → 加载钳制强制 VGA + POST 非 VGA 被拒。
+  之前"本模组仅 VGA"的结论被"保存失败→AI 复活→强制 VGA"污染（PIT-021/022），
+  分辨率上限复测中（CAMERA_RES_BOARD_MAX 临时 15，测毕定稿）。
+- 帧尺寸校验改区间（`val > max` 拒绝），不再是单值锁定；AT+INFO 现在打印 `AI: face=.. motion=.. qr=..`。
+- **RTSP 会话创建包 try/catch**（PIT-025）：线程耗尽抛 system_error 曾整机 abort（rst:0xc）。
+- uptime 改 `esp_timer_get_time()`（64 位，tick 回绕免疫）。
+- 统一 logo favicon.svg（四仓同 md5，PIT-026 的 reconfigure 纪律适用）。

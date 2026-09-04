@@ -42,6 +42,14 @@ static const char *TAG = "mjpeg";
 #define SEND_TIMEOUT_MS     15000
 #define STREAM_PORT         81
 static int s_client_count = 0;
+
+/* 客户端注册表（LRU 踢除用）：浏览器渲染器停滞时 TCP 依然健康，探测抓不到，
+ * 槽位会被永久占用 → 满员时强制 shutdown 最旧连接，新连接永远能赢 */
+typedef struct {
+    int        fd;
+    TickType_t since;
+} mjpeg_client_slot_t;
+static mjpeg_client_slot_t s_clients[MAX_STREAM_CLIENTS];
 static SemaphoreHandle_t s_mutex = NULL;
 static TaskHandle_t s_listen_task = NULL;
 static int s_listen_sock = -1;
@@ -65,6 +73,14 @@ static void mjpeg_client_task(void *arg)
     /* Disable Nagle's algorithm — lower latency for small MJPEG part-headers */
     int flag = 1;
     setsockopt(client_sock, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+
+    /* TCP keepalive：NAT 掉线/设备休眠型僵尸连接 ~30s 内被内核判死 */
+    int ka = 1;
+    setsockopt(client_sock, SOL_SOCKET, SO_KEEPALIVE, &ka, sizeof(ka));
+    int keep_idle = 10, keep_intvl = 5, keep_cnt = 3;
+    setsockopt(client_sock, IPPROTO_TCP, TCP_KEEPIDLE, &keep_idle, sizeof(keep_idle));
+    setsockopt(client_sock, IPPROTO_TCP, TCP_KEEPINTVL, &keep_intvl, sizeof(keep_intvl));
+    setsockopt(client_sock, IPPROTO_TCP, TCP_KEEPCNT, &keep_cnt, sizeof(keep_cnt));
 
     /* Recv timeout — prevents zombie if client connects but never sends HTTP request */
     struct timeval rcvtv = { .tv_sec = 5, .tv_usec = 0 };
@@ -135,7 +151,18 @@ static void mjpeg_client_task(void *arg)
         return;
     }
 
-    ESP_LOGI(TAG, "Stream client started (total %d)", s_client_count);
+    /* 登记到客户端注册表（LRU 踢除依据）— 必须在请求校验通过之后 */
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    for (int i = 0; i < MAX_STREAM_CLIENTS; i++) {
+        if (s_clients[i].fd == 0) {
+            s_clients[i].fd = client_sock;
+            s_clients[i].since = xTaskGetTickCount();
+            break;
+        }
+    }
+    xSemaphoreGive(s_mutex);
+
+ESP_LOGI(TAG, "Stream client started (total %d)", s_client_count);
 
     /* ---- Stream loop ------------------------------------------------- */
     char part_hdr[192];
@@ -212,7 +239,14 @@ stream_done:
 
     close(client_sock);
 
+/* 从注册表注销 */
     xSemaphoreTake(s_mutex, portMAX_DELAY);
+    for (int i = 0; i < MAX_STREAM_CLIENTS; i++) {
+        if (s_clients[i].fd == client_sock) {
+            s_clients[i].fd = 0;
+            break;
+        }
+    }
     s_client_count--;
     xSemaphoreGive(s_mutex);
 
@@ -244,17 +278,52 @@ static void mjpeg_listen_task(void *arg)
             continue;
         }
 
-        /* Enforce client limit */
+        /* 发送超时兜底（2026-09-04 家族同步）：TCP 零窗口客户端的 send()
+         * 会长期阻塞占住任务；10s 超时让其走断开清理。 */
+        struct timeval snd_to = { .tv_sec = 10, .tv_usec = 0 };
+        setsockopt(client_sock, SOL_SOCKET, SO_SNDTIMEO, &snd_to, sizeof(snd_to));
+
+        /* 满员时踢最旧连接（LRU）：shutdown 唤醒其阻塞 send/recv → 自行清理释放槽位 */
+        bool slot_ready = false;
         xSemaphoreTake(s_mutex, portMAX_DELAY);
-        if (s_client_count >= MAX_STREAM_CLIENTS) {
+        if (s_client_count < MAX_STREAM_CLIENTS) {
+            slot_ready = true;
+        } else {
+            TickType_t now = xTaskGetTickCount();
+            int oldest_fd = 0;
+            TickType_t oldest_age = 0;
+            for (int i = 0; i < MAX_STREAM_CLIENTS; i++) {
+                if (s_clients[i].fd != 0) {
+                    TickType_t age = (TickType_t)(now - s_clients[i].since);
+                    if (age >= oldest_age) {
+                        oldest_age = age;
+                        oldest_fd = s_clients[i].fd;
+                    }
+                }
+            }
+            if (oldest_fd != 0) {
+                ESP_LOGW(TAG, "Max clients (%d) — kicking oldest fd=%d for newcomer",
+                         MAX_STREAM_CLIENTS, oldest_fd);
+                shutdown(oldest_fd, SHUT_RDWR);
+            }
+        }
+        xSemaphoreGive(s_mutex);
+
+        for (int wait = 0; !slot_ready && wait < 20; wait++) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            xSemaphoreTake(s_mutex, portMAX_DELAY);
+            slot_ready = (s_client_count < MAX_STREAM_CLIENTS);
             xSemaphoreGive(s_mutex);
-            ESP_LOGW(TAG, "Max stream clients (%d) reached, rejecting", MAX_STREAM_CLIENTS);
+        }
+        if (!slot_ready) {
+            ESP_LOGW(TAG, "Slot still busy after kick — rejecting with 503");
             const char *reject = "HTTP/1.1 503 Service Unavailable\r\n"
                                  "Content-Length: 25\r\n\r\nMax stream connections\r\n";
             send(client_sock, reject, strlen(reject), 0);
             close(client_sock);
             continue;
         }
+
         s_client_count++;
         xSemaphoreGive(s_mutex);
 

@@ -61,11 +61,23 @@ static const camera_config_t s_camera_cfg = {
 /*  camera_init()                                                      */
 /* ------------------------------------------------------------------ */
 
+int camera_get_effective_max_res(void)
+{
+    return CAMERA_RES_BOARD_MAX;
+}
+
 esp_err_t camera_init(void)
 {
     /* Read config values */
     uint8_t framesize = config_get_cam_framesize();
+    if (framesize > CAMERA_RES_BOARD_MAX) {
+        ESP_LOGW(TAG, "Config framesize=%u exceeds board max — clamping (PIT-021)",
+                 framesize);
+        framesize = CAMERA_RES_BOARD_MAX;
+    }
     uint8_t quality = config_get_cam_quality();
+    if (quality < CAMERA_QUALITY_MIN) quality = CAMERA_QUALITY_MIN;
+    if (quality > CAMERA_QUALITY_MAX) quality = CAMERA_QUALITY_MAX;
 
     /* Force VGA when AI is enabled (pipeline hardcodes 640x480) */
     if (!camera_framesize_is_vga(framesize) &&
@@ -170,6 +182,12 @@ void camera_apply_sensor_settings(void)
 
 esp_err_t camera_reinit(uint8_t framesize, uint8_t quality)
 {
+    if (framesize > CAMERA_RES_BOARD_MAX) {
+        ESP_LOGW(TAG, "reinit framesize=%u exceeds board max — clamping", framesize);
+        framesize = CAMERA_RES_BOARD_MAX;
+    }
+    if (quality < CAMERA_QUALITY_MIN) quality = CAMERA_QUALITY_MIN;
+    if (quality > CAMERA_QUALITY_MAX) quality = CAMERA_QUALITY_MAX;
     ESP_LOGI(TAG, "Camera reinit requested: framesize=%d quality=%d", framesize, quality);
 
     /* Record AI running state before stopping */
@@ -274,6 +292,22 @@ const char *camera_framesize_name(uint8_t framesize)
         case 23: return "QSXGA";
         case 24: return "5MP";
         default: return "unknown";
+    }
+}
+
+/** @brief 返回检测到的传感器型号字符串（契约 v1.0: status.camera 字段） */
+const char *camera_sensor_name(void)
+{
+    sensor_t *sensor = esp_camera_sensor_get();
+    if (!sensor) {
+        return "unknown";
+    }
+    switch (sensor->id.PID) {
+        case 0x26:
+        case 0x42:  return "OV2640";
+        case 0x77:  return "OV3660";
+        case 0x5640: return "OV5640";
+        default:     return "unknown";
     }
 }
 

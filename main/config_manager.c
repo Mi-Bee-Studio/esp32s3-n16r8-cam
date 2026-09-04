@@ -20,6 +20,7 @@
  */
 
 #include "config_manager.h"
+#include "camera_driver.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -60,6 +61,7 @@ typedef struct {
     int8_t  cam_sharpness;    /* OV3660 sharpness range TBD from sensor_t */
     bool    cam_hmirror;      /* horizontal mirror */
     bool    cam_vflip;        /* vertical flip */
+    char    device_name[33];  /* 契约 v1.0: 设备名称 */
 } config_t;
 
 static config_t s_config;
@@ -76,7 +78,7 @@ static const config_t s_defaults = {
     .ai_qr_enable    = true,
     .rtsp_user       = "admin",
     .rtsp_pass       = "admin",
-    .web_password    = "",
+    .web_password    = "***REMOVED-DEFAULT-PASSWORD***",   /* 契约 v1.1 家族统一默认 */
     .onvif_enable    = true,
     .cam_brightness  = 0,
     .cam_contrast    = 0,
@@ -84,6 +86,7 @@ static const config_t s_defaults = {
     .cam_sharpness   = 0,
     .cam_hmirror     = false,
     .cam_vflip       = false,
+    .device_name     = "MiBeeCam",
 };
 
 /* ------------------------------------------------------------------ */
@@ -114,7 +117,11 @@ static const key_entry_t s_keys[] = {
     { "cam_framesize",   TYPE_U8,     OFF_U8(cam_framesize)    },
     { "cam_quality",     TYPE_U8,     OFF_U8(cam_quality)      },
     { "ai_face_enable",  TYPE_U8,     OFF_U8(ai_face_enable)   },
-    { "ai_motion_enable", TYPE_U8,    OFF_U8(ai_motion_enable) },
+    /* PIT-022：NVS 键名上限 15 字符——"ai_motion_enable"(16) 使 nvs_set_u8
+     * 返回 ESP_ERR_NVS_INVALID_NAME，config_save() 全量写键遇错即返回，
+     * 导致每次保存失败且其后所有键（含 ai_qr/rtsp/web_password…）永不落盘。
+     * “AT 关 AI 重启又复活”即此因。键名缩到 12 字符，旧非法键从未写入过。 */
+    { "ai_motion_en",    TYPE_U8,     OFF_U8(ai_motion_enable) },
     { "ai_qr_enable",    TYPE_U8,     OFF_U8(ai_qr_enable)     },
     { "rtsp_user",       TYPE_STRING, OFF_STR(rtsp_user)       },
     { "rtsp_pass",       TYPE_STRING, OFF_STR(rtsp_pass)       },
@@ -126,6 +133,7 @@ static const key_entry_t s_keys[] = {
     { "cam_sharpness",  TYPE_I8, OFF_I8(cam_sharpness)  },
     { "cam_hmirror",    TYPE_U8, OFF_U8(cam_hmirror)    },
     { "cam_vflip",      TYPE_U8, OFF_U8(cam_vflip)      },
+    { "device_name",    TYPE_STRING, OFF_STR(device_name) },
 };
 
 #define NUM_KEYS (sizeof(s_keys) / sizeof(s_keys[0]))
@@ -195,6 +203,27 @@ static esp_err_t read_i8_nvs(nvs_handle_t h, const key_entry_t *k)
 /*  Public API                                                         */
 /* ------------------------------------------------------------------ */
 
+/* 契约 v1.1 密码统一一次性种子：存量设备可能带未知历史密码，
+ * NVS 标记 pw_seed_v1 保证仅升级后首启执行一次（与 seeed 同款） */
+static void password_seed_once(void)
+{
+    nvs_handle_t h;
+    uint8_t seeded = 0;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, "pw_seed_v1", &seeded);
+        nvs_close(h);
+    }
+    if (seeded == 1) return;
+    ESP_LOGW(TAG, "One-shot password seed: unifying web_password to family default");
+    strlcpy(s_config.web_password, "***REMOVED-DEFAULT-PASSWORD***", sizeof(s_config.web_password));
+    config_save();
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, "pw_seed_v1", 1);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
+
 esp_err_t config_load(void)
 {
     /* Prevent double-init: re-entry would leak the config mutex */
@@ -233,6 +262,14 @@ esp_err_t config_load(void)
     }
 
     nvs_close(h);
+    /* 板级边界（2026-09-04）：本模组仅 VGA 稳定（PIT-021）；旧配置可能存过
+     * 更高档（当时配置与实际输出脱节）——加载钳制回 VGA */
+    if (s_config.cam_framesize > CAMERA_RES_BOARD_MAX) {
+        ESP_LOGW(TAG, "Legacy cam_framesize=%u clamped to VGA on load (module constraint)",
+                 s_config.cam_framesize);
+        s_config.cam_framesize = CAMERA_RES_BOARD_MAX;
+    }
+    password_seed_once();
     ESP_LOGI(TAG, "Config loaded from NVS");
     s_config_loaded = true;
     return ESP_OK;
@@ -242,6 +279,8 @@ esp_err_t config_set(const char *key, const char *value)
 {
     const key_entry_t *k = find_key(key);
     if (!k || !value) {
+        /* PIT-022：未知键曾是“静默失败”（调用方不查返回值），点名告警 */
+        ESP_LOGW(TAG, "config_set: unknown key '%s' — value DROPPED", key ? key : "(null)");
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -356,6 +395,7 @@ int8_t config_get_cam_sharpness(void)  { return s_config.cam_sharpness; }
 bool   config_get_cam_hmirror(void)    { return s_config.cam_hmirror; }
 bool   config_get_cam_vflip(void)      { return s_config.cam_vflip; }
 const char *config_get_web_password(void) { return s_config.web_password; }
+const char *config_get_device_name(void)  { return s_config.device_name; }
 
 cJSON *config_get_json(void)
 {

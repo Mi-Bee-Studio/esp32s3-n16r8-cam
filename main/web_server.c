@@ -16,8 +16,16 @@
 #include "web_server.h"
 #include "mjpeg_streamer.h"
 #include "esp_http_server.h"
+#include "lwip/sockets.h"   /* TCP_NODELAY/KEEPALIVE sockopts（PIT-018 教训：WIP 漏 include，2026-09-04 补） */
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_timer.h"
+
+/* FW_VERSION 由 ota_updater.h（WIP，未入库）提供；此处兜底定义保证
+ * 干净克隆可编译——OTA 合入后其同名定义优先生效（#ifndef 守卫）。 */
+#ifndef FW_VERSION
+#define FW_VERSION "0.1.1"
+#endif
 #include "freertos/FreeRTOS.h"
 #include "cJSON.h"
 #include "config_manager.h"
@@ -25,12 +33,15 @@
 #include "flash_led.h"
 #include "ai_pipeline.h"
 #include "camera_driver.h"
+#include "esp_camera.h"
+#include "esp_wifi.h"
 #include "esp_spiffs.h"  /* for stat on SPIFFS files */
-#include "lwip/sockets.h"  /* setsockopt / TCP_NODELAY in on_session_open */
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <sys/stat.h>
+#include <sys/time.h>
+#include <time.h>
 
 static const char *TAG = "web";
 
@@ -152,15 +163,39 @@ static esp_err_t require_auth(httpd_req_t *req)
     size_t password_len = sizeof(password) - 1;
     esp_err_t ret = httpd_req_get_hdr_value_str(req, "X-Password", password, password_len);
     if (ret != ESP_OK) {
-        return json_error(req, "unauthorized", HTTPD_401_UNAUTHORIZED);
+        return json_error(req, "Unauthorized", HTTPD_401_UNAUTHORIZED);
     }
     password[password_len] = '\0';
-    
+
     if (strcmp(password, stored_pass) != 0) {
-        return json_error(req, "unauthorized", HTTPD_401_UNAUTHORIZED);
+        return json_error(req, "Unauthorized", HTTPD_401_UNAUTHORIZED);
     }
     
     return ESP_OK;
+}
+
+/** @brief 公共鉴权入口（OTA 等模块复用）：状态A返回 SET_PASSWORD_FIRST，状态B校验 X-Password */
+esp_err_t web_server_check_auth(httpd_req_t *req)
+{
+    const char *stored_pass = config_get_web_password();
+    if (!stored_pass || stored_pass[0] == '\0') {
+        return json_error(req, "SET_PASSWORD_FIRST", HTTPD_401_UNAUTHORIZED);
+    }
+    if (!check_auth(req)) {
+        return json_error(req, "Unauthorized", HTTPD_401_UNAUTHORIZED);
+    }
+    return ESP_OK;
+}
+
+esp_err_t json_error_status(httpd_req_t *req, const char *msg, const char *status_line)
+{
+    char json[256];
+    int len = snprintf(json, sizeof(json), "{\"ok\":false,\"error\":\"%s\"}", msg);
+    if (len >= (int)sizeof(json)) len = (int)sizeof(json) - 1;
+    httpd_resp_set_status(req, status_line);
+    httpd_resp_set_type(req, "application/json");
+    set_cors_headers(req);
+    return httpd_resp_send(req, json, len);
 }
 
 /* ------------------------------------------------------------------ */
@@ -236,23 +271,19 @@ static esp_err_t api_status_handler(httpd_req_t *req)
         return json_error(req, "Out of memory", HTTPD_500_INTERNAL_SERVER_ERROR);
     }
 
-    /* WiFi */
+    /* Device + WiFi (契约 v1.0 字段) */
+    const char *device_name = config_get_device_name();
+    cJSON_AddStringToObject(data, "device_name",
+        (device_name && device_name[0]) ? device_name : "MiBeeCam");
     cJSON_AddStringToObject(data, "wifi_ssid", config_get_wifi_ssid());
+    cJSON_AddStringToObject(data, "wifi_state",
+        wifi_manager_is_connected() ? "connected" : "disconnected");
     cJSON_AddStringToObject(data, "ip", wifi_manager_get_ip());
 
-    /* Camera */
-    cJSON_AddStringToObject(data, "camera_resolution",
+    /* Camera — 传感器型号 + 当前分辨率（细节在 /api/camera） */
+    cJSON_AddStringToObject(data, "camera", camera_sensor_name());
+    cJSON_AddStringToObject(data, "resolution",
         camera_framesize_name(config_get_cam_framesize()));
-    cJSON_AddNumberToObject(data, "camera_framesize", config_get_cam_framesize());
-    cJSON_AddNumberToObject(data, "camera_quality", config_get_cam_quality());
-
-    /* Camera sensor settings */
-    cJSON_AddNumberToObject(data, "cam_brightness", config_get_cam_brightness());
-    cJSON_AddNumberToObject(data, "cam_contrast",   config_get_cam_contrast());
-    cJSON_AddNumberToObject(data, "cam_saturation", config_get_cam_saturation());
-    cJSON_AddNumberToObject(data, "cam_sharpness",  config_get_cam_sharpness());
-    cJSON_AddBoolToObject(data,   "cam_hmirror",    config_get_cam_hmirror());
-    cJSON_AddBoolToObject(data,   "cam_vflip",      config_get_cam_vflip());
 
     /* AI status */
     cJSON *ai = cJSON_CreateObject();
@@ -264,14 +295,18 @@ static esp_err_t api_status_handler(httpd_req_t *req)
     }
 
     /* System */
+    cJSON_AddStringToObject(data, "firmware_version", FW_VERSION);
     cJSON_AddNumberToObject(data, "free_heap",
         (double)esp_get_free_heap_size());
+    cJSON_AddNumberToObject(data, "min_heap",
+        (double)esp_get_minimum_free_heap_size());
     cJSON_AddNumberToObject(data, "free_psram",
         (double)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-    cJSON_AddNumberToObject(data, "mjpeg_clients",
+    cJSON_AddNumberToObject(data, "stream_clients",
         mjpeg_stream_client_count());
+    cJSON_AddNumberToObject(data, "stream_clients_max", 2);
     cJSON_AddNumberToObject(data, "uptime",
-        (double)(xTaskGetTickCount() * portTICK_PERIOD_MS) / 1000.0);
+        (double)(esp_timer_get_time() / 1000000));
 
     return json_ok(req, data);
 }
@@ -294,6 +329,7 @@ static esp_err_t api_config_get_handler(httpd_req_t *req)
     } else {
         cJSON_AddStringToObject(data, "wifi_pass", "");
     }
+    cJSON_AddStringToObject(data, "device_name",      config_get_device_name());
     cJSON_AddNumberToObject(data, "cam_framesize",    config_get_cam_framesize());
     cJSON_AddNumberToObject(data, "cam_quality",      config_get_cam_quality());
     cJSON_AddBoolToObject(data,   "ai_face_enable",   config_get_ai_face_enable());
@@ -312,7 +348,6 @@ static esp_err_t api_config_get_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(data, "cam_sharpness",  config_get_cam_sharpness());
     cJSON_AddBoolToObject(data,   "cam_hmirror",    config_get_cam_hmirror());
     cJSON_AddBoolToObject(data,   "cam_vflip",      config_get_cam_vflip());
-    cJSON_AddNumberToObject(data, "mjpeg_clients",    mjpeg_stream_client_count());
 
     return json_ok(req, data);
 }
@@ -358,7 +393,8 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
     int updated = 0;
     bool wifi_changed = false;
     const char *known_keys[] = {
-        "wifi_ssid", "wifi_pass", "cam_framesize", "cam_quality",
+        /* 修复：web_password 此前不在白名单，首次设密实际从未持久化 */
+        "wifi_ssid", "wifi_pass", "web_password", "device_name", "cam_framesize", "cam_quality",
         "ai_face_enable", "ai_motion_enable", "ai_qr_enable",
         "rtsp_user", "rtsp_pass", "onvif_enable",
         "cam_brightness", "cam_contrast", "cam_saturation", "cam_sharpness",
@@ -372,6 +408,24 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
         if (strcmp(known_keys[i], "wifi_ssid") == 0 ||
             strcmp(known_keys[i], "wifi_pass") == 0) {
             wifi_changed = true;
+        }
+        /* 契约 v1.1：拒绝空/过短密码 */
+        if (strcmp(known_keys[i], "web_password") == 0) {
+            if (strlen(item->valuestring) < 6) {
+                cJSON_Delete(json);
+                return json_error(req, "web_password must be at least 6 characters", HTTPD_400_BAD_REQUEST);
+            }
+        }
+        /* 画质边界（2026-09-04，驱动不变量）：q<10 撞 esp32-camera 的 w*h/5
+         * JPEG fb 预算产生截断帧，PIT-021 */
+        if (strcmp(known_keys[i], "cam_quality") == 0 && cJSON_IsNumber(item)) {
+            if (item->valueint < CAMERA_QUALITY_MIN || item->valueint > CAMERA_QUALITY_MAX) {
+                char msg[64];
+                snprintf(msg, sizeof(msg), "cam_quality out of range (%d-%d)",
+                         CAMERA_QUALITY_MIN, CAMERA_QUALITY_MAX);
+                cJSON_Delete(json);
+                return json_error(req, msg, HTTPD_400_BAD_REQUEST);
+            }
         }
 
         char value_str[64];
@@ -494,7 +548,7 @@ static esp_err_t api_ai_handler(httpd_req_t *req)
 
     item = cJSON_GetObjectItem(json, "motion");
     if (item && cJSON_IsBool(item)) {
-        config_set("ai_motion_enable", item->valueint ? "1" : "0");
+        config_set("ai_motion_en", item->valueint ? "1" : "0");   /* NVS 键 ≤15 字符（PIT-022） */
         ai_enable(AI_FEATURE_MOTION_DETECT, item->valueint ? true : false);
         ESP_LOGI(TAG, "AI motion detection %s", item->valueint ? "enabled" : "disabled");
         updated++;
@@ -588,11 +642,12 @@ static esp_err_t api_capabilities_handler(httpd_req_t *req)
         return json_error(req, "Out of memory", HTTPD_500_INTERNAL_SERVER_ERROR);
     }
     
-    /* Per-board capability matrix (esp32s3-n16r8-cam) */
+    /* 契约 v1.0：12 个布尔能力位 + api_version/wifi_scan（见 docs/api-contract.md） */
+    cJSON_AddStringToObject(data, "api_version", "1.1");
+    cJSON_AddBoolToObject(data, "wifi_scan", true);
     cJSON_AddBoolToObject(data, "ai",        true);   /* Has AI pipeline */
     cJSON_AddBoolToObject(data, "sd",        false);  /* No SD card */
     cJSON_AddBoolToObject(data, "audio",     false);  /* No audio */
-    cJSON_AddBoolToObject(data, "ota",       false);  /* No OTA web endpoint */
     cJSON_AddBoolToObject(data, "mic",       false);  /* No mic */
     cJSON_AddBoolToObject(data, "flash_led", true);   /* Has flash LED */
     cJSON_AddBoolToObject(data, "recording", false);  /* No recording */
@@ -618,13 +673,34 @@ static esp_err_t api_camera_get_handler(httpd_req_t *req)
 
     cJSON_AddNumberToObject(data, "cam_framesize",  config_get_cam_framesize());
     cJSON_AddNumberToObject(data, "cam_quality",    config_get_cam_quality());
+    /* 契约扩展（2026-09-04）：画质滑杆边界由板端声明，前端据此钳制输入 */
+    cJSON_AddNumberToObject(data, "quality_min",    CAMERA_QUALITY_MIN);
+    cJSON_AddNumberToObject(data, "quality_max",    CAMERA_QUALITY_MAX);
     cJSON_AddNumberToObject(data, "cam_brightness", config_get_cam_brightness());
     cJSON_AddNumberToObject(data, "cam_contrast",   config_get_cam_contrast());
     cJSON_AddNumberToObject(data, "cam_saturation", config_get_cam_saturation());
     cJSON_AddNumberToObject(data, "cam_sharpness",  config_get_cam_sharpness());
     cJSON_AddBoolToObject(data,   "cam_hmirror",    config_get_cam_hmirror());
     cJSON_AddBoolToObject(data,   "cam_vflip",      config_get_cam_vflip());
-    cJSON_AddStringToObject(data, "cam_framesize_name", camera_framesize_name(config_get_cam_framesize()));
+    cJSON_AddStringToObject(data, "resolution", camera_framesize_name(config_get_cam_framesize()));
+
+    /* 契约 v1.0：分辨率列表动态下发（esp32-camera framesize_t 刻度 0-15） */
+    {
+        static const struct { int value; const char *label; } res_list[] = {
+            /* 板级实测（2026-09-04 复测，PIT-021/022）：SVGA 稳定、XGA 起
+             * 冷启动取帧死。含污染链翻案全过程见 camera_driver.h 注释。 */
+            { 10, "VGA (640x480)" },
+            { 11, "SVGA (800x600)" },
+        };
+        cJSON *res_arr = cJSON_CreateArray();
+        for (size_t i = 0; i < sizeof(res_list) / sizeof(res_list[0]); i++) {
+            cJSON *item = cJSON_CreateObject();
+            cJSON_AddStringToObject(item, "label", res_list[i].label);
+            cJSON_AddNumberToObject(item, "value", res_list[i].value);
+            cJSON_AddItemToArray(res_arr, item);
+        }
+        cJSON_AddItemToObject(data, "supported_resolutions", res_arr);
+    }
 
     return json_ok(req, data);
 }
@@ -658,13 +734,21 @@ static esp_err_t api_camera_post_handler(httpd_req_t *req)
     uint8_t new_quality = config_get_cam_quality();
     int updated = 0;
 
-    /* cam_framesize */
+    /* cam_framesize — 板级上限内自由选择（区间校验，非单值锁定） */
     item = cJSON_GetObjectItem(json, "cam_framesize");
     if (item && cJSON_IsNumber(item)) {
         int val = item->valueint;
-        if (val < 0 || val > 24) {
+            if (val < 0 || val > 15) {
             cJSON_Delete(json);
-            return json_error(req, "cam_framesize out of range (0-24)", HTTPD_400_BAD_REQUEST);
+            return json_error(req, "cam_framesize out of range (0-15)", HTTPD_400_BAD_REQUEST);
+        }
+        if (val > camera_get_effective_max_res()) {
+            cJSON_Delete(json);
+            char msg[96];
+            snprintf(msg, sizeof(msg),
+                "cam_framesize %d exceeds board max %d (measured, PIT-021)",
+                val, camera_get_effective_max_res());
+            return json_error(req, msg, HTTPD_400_BAD_REQUEST);
         }
         /* AI safety check — reject non-VGA if any AI feature is enabled */
         if (!camera_framesize_is_vga((uint8_t)val) &&
@@ -682,9 +766,12 @@ static esp_err_t api_camera_post_handler(httpd_req_t *req)
     item = cJSON_GetObjectItem(json, "cam_quality");
     if (item && cJSON_IsNumber(item)) {
         int val = item->valueint;
-        if (val < 0 || val > 63) {
+        if (val < CAMERA_QUALITY_MIN || val > CAMERA_QUALITY_MAX) {
+            char msg[64];
+            snprintf(msg, sizeof(msg), "cam_quality out of range (%d-%d)",
+                     CAMERA_QUALITY_MIN, CAMERA_QUALITY_MAX);
             cJSON_Delete(json);
-            return json_error(req, "cam_quality out of range (0-63)", HTTPD_400_BAD_REQUEST);
+            return json_error(req, msg, HTTPD_400_BAD_REQUEST);
         }
         new_quality = (uint8_t)val;
         need_reinit = true;
@@ -758,6 +845,227 @@ static esp_err_t options_handler(httpd_req_t *req)
 }
 
 /* ------------------------------------------------------------------ */
+/*  GET /api/capture — 单帧 JPEG（契约 v1.0 核心端点）                  */
+/* ------------------------------------------------------------------ */
+
+static esp_err_t api_capture_handler(httpd_req_t *req)
+{
+    camera_fb_t *fb = camera_capture();
+    if (!fb) {
+        return json_error(req, "Capture failed", HTTPD_500_INTERNAL_SERVER_ERROR);
+    }
+    httpd_resp_set_type(req, "image/jpeg");
+    httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=capture.jpg");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache, must-revalidate");
+    httpd_resp_send(req, (const char *)fb->buf, fb->len);
+    esp_camera_fb_return(fb);
+    return ESP_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/*  GET /api/scan — WiFi 扫描（阻塞式，按 RSSI 降序）                  */
+/* ------------------------------------------------------------------ */
+
+static esp_err_t api_scan_handler(httpd_req_t *req)
+{
+    wifi_scan_config_t sc = { .show_hidden = false };
+    esp_err_t err = esp_wifi_scan_start(&sc, true);
+    if (err != ESP_OK) {
+        return json_error(req, "Scan failed (STA not ready?)", HTTPD_500_INTERNAL_SERVER_ERROR);
+    }
+
+    uint16_t n = 0;
+    esp_wifi_scan_get_ap_num(&n);
+    if (n > 20) n = 20;
+
+    wifi_ap_record_t *recs = malloc(sizeof(wifi_ap_record_t) * (n ? n : 1));
+    if (!recs) {
+        esp_wifi_clear_ap_list();
+        return json_error(req, "Out of memory", HTTPD_500_INTERNAL_SERVER_ERROR);
+    }
+    esp_wifi_scan_get_ap_records(&n, recs);
+
+    /* 按 RSSI 降序（简单插入排序，n≤20） */
+    for (int i = 1; i < (int)n; i++) {
+        wifi_ap_record_t key = recs[i];
+        int j = i - 1;
+        while (j >= 0 && recs[j].rssi < key.rssi) {
+            recs[j + 1] = recs[j];
+            j--;
+        }
+        recs[j + 1] = key;
+    }
+
+    cJSON *data = cJSON_CreateObject();
+    cJSON *arr = cJSON_CreateArray();
+    for (int i = 0; i < (int)n; i++) {
+        cJSON *ap = cJSON_CreateObject();
+        cJSON_AddStringToObject(ap, "ssid", (const char *)recs[i].ssid);
+        cJSON_AddNumberToObject(ap, "rssi", recs[i].rssi);
+        cJSON_AddNumberToObject(ap, "auth", recs[i].authmode);
+        cJSON_AddItemToArray(arr, ap);
+    }
+    free(recs);
+    cJSON_AddItemToObject(data, "networks", arr);
+    return json_ok(req, data);
+}
+
+/* ------------------------------------------------------------------ */
+/*  POST /api/reset · POST /api/reboot · GET /api/auth                 */
+/* ------------------------------------------------------------------ */
+
+static esp_err_t api_reset_handler(httpd_req_t *req)
+{
+    esp_err_t ret = require_auth(req);
+    if (ret != ESP_OK) return ret;
+
+    ESP_LOGW(TAG, "Factory reset requested via web API");
+    config_reset();
+
+    cJSON *data = cJSON_CreateObject();
+    cJSON_AddStringToObject(data, "message", "Rebooting...");
+    json_ok(req, data);
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+    return ESP_OK;  /* not reached */
+}
+
+static esp_err_t api_reboot_handler(httpd_req_t *req)
+{
+    esp_err_t ret = require_auth(req);
+    if (ret != ESP_OK) return ret;
+
+    cJSON *data = cJSON_CreateObject();
+    cJSON_AddStringToObject(data, "message", "Rebooting...");
+    json_ok(req, data);
+    ESP_LOGW(TAG, "Reboot requested via web API");
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+    return ESP_OK;  /* not reached */
+}
+
+static esp_err_t api_auth_handler(httpd_req_t *req)
+{
+    const char *stored = config_get_web_password();
+
+    if (!stored || stored[0] == '\0') {
+        cJSON *data = cJSON_CreateObject();
+        cJSON_AddBoolToObject(data, "auth", true);
+        cJSON_AddBoolToObject(data, "password_set", false);
+        return json_ok(req, data);
+    }
+    if (check_auth(req)) {
+        cJSON *data = cJSON_CreateObject();
+        cJSON_AddBoolToObject(data, "auth", true);
+        cJSON_AddBoolToObject(data, "password_set", true);
+        return json_ok(req, data);
+    }
+    return json_error(req, "Unauthorized", HTTPD_401_UNAUTHORIZED);
+}
+
+/* ------------------------------------------------------------------ */
+/*  POST /api/time — 手动设置系统时间                                   */
+/* ------------------------------------------------------------------ */
+
+static esp_err_t api_time_handler(httpd_req_t *req)
+{
+    esp_err_t ret = require_auth(req);
+    if (ret != ESP_OK) return ret;
+
+    char *body = read_body(req, 256);
+    if (!body) return json_error(req, "Empty body", HTTPD_400_BAD_REQUEST);
+    cJSON *json = cJSON_Parse(body);
+    free(body);
+    if (!json) return json_error(req, "Invalid JSON", HTTPD_400_BAD_REQUEST);
+
+    cJSON *jy = cJSON_GetObjectItem(json, "year");
+    cJSON *jmo = cJSON_GetObjectItem(json, "month");
+    cJSON *jd = cJSON_GetObjectItem(json, "day");
+    cJSON *jh = cJSON_GetObjectItem(json, "hour");
+    cJSON *jmi = cJSON_GetObjectItem(json, "min");
+    cJSON *js = cJSON_GetObjectItem(json, "sec");
+
+    if (!cJSON_IsNumber(jy) || !cJSON_IsNumber(jmo) || !cJSON_IsNumber(jd) ||
+        !cJSON_IsNumber(jh) || !cJSON_IsNumber(jmi) || !cJSON_IsNumber(js)) {
+        cJSON_Delete(json);
+        return json_error(req, "Missing time fields", HTTPD_400_BAD_REQUEST);
+    }
+
+    struct tm tm_now = {
+        .tm_year = jy->valueint - 1900,
+        .tm_mon = jmo->valueint - 1,
+        .tm_mday = jd->valueint,
+        .tm_hour = jh->valueint,
+        .tm_min = jmi->valueint,
+        .tm_sec = js->valueint,
+    };
+    time_t epoch = mktime(&tm_now);
+    cJSON_Delete(json);
+
+    if (epoch < (time_t)1577836800) {  /* < 2020-01-01: 非法日期 */
+        return json_error(req, "Invalid date", HTTPD_400_BAD_REQUEST);
+    }
+    struct timeval tv = { .tv_sec = epoch, .tv_usec = 0 };
+    settimeofday(&tv, NULL);
+    return json_ok(req, NULL);
+}
+
+/* ------------------------------------------------------------------ */
+/*  GET /api/led — 闪光灯亮度读取（契约 v1.0：GET+POST 成对）           */
+/* ------------------------------------------------------------------ */
+
+static esp_err_t api_led_get_handler(httpd_req_t *req)
+{
+    cJSON *data = cJSON_CreateObject();
+    cJSON_AddNumberToObject(data, "brightness", flash_led_get_brightness());
+    return json_ok(req, data);
+}
+
+/* ------------------------------------------------------------------ */
+/*  GET /metrics — Prometheus 最小指标                                  */
+/* ------------------------------------------------------------------ */
+
+static esp_err_t metrics_handler(httpd_req_t *req)
+{
+    char buf[1024];
+    int rssi = 0;
+    wifi_ap_record_t ap;
+    if (wifi_manager_is_connected() && esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+        rssi = ap.rssi;
+    }
+    int len = snprintf(buf, sizeof(buf),
+        "# HELP esp_free_heap_bytes Free heap memory\n"
+        "# TYPE esp_free_heap_bytes gauge\n"
+        "esp_free_heap_bytes %lu\n"
+        "# HELP esp_free_psram_bytes Free PSRAM memory\n"
+        "# TYPE esp_free_psram_bytes gauge\n"
+        "esp_free_psram_bytes %lu\n"
+        "# HELP esp_min_free_heap_bytes Minimum free heap bytes since boot\n"
+        "# TYPE esp_min_free_heap_bytes gauge\n"
+        "esp_min_free_heap_bytes %lu\n"
+        "# HELP esp_uptime_seconds System uptime in seconds\n"
+        "# TYPE esp_uptime_seconds gauge\n"
+        "esp_uptime_seconds %lu\n"
+        "# HELP esp_wifi_rssi_dbm WiFi RSSI\n"
+        "# TYPE esp_wifi_rssi_dbm gauge\n"
+        "esp_wifi_rssi_dbm %d\n"
+        "# HELP esp_mjpeg_clients MJPEG stream clients\n"
+        "# TYPE esp_mjpeg_clients gauge\n"
+        "esp_mjpeg_clients %d\n",
+        (unsigned long)esp_get_free_heap_size(),
+        (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+        (unsigned long)esp_get_minimum_free_heap_size(),
+        (unsigned long)(xTaskGetTickCount() * portTICK_PERIOD_MS / 1000),
+        rssi,
+        mjpeg_stream_client_count());
+
+    set_cors_headers(req);
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_send(req, buf, len);
+    return ESP_OK;
+}
+
+/* ------------------------------------------------------------------ */
 /*  URI handler registration table                                     */
 /* ------------------------------------------------------------------ */
 
@@ -770,16 +1078,26 @@ typedef struct {
 static const uri_entry_t s_uris[] = {
     /* Static files */
     { "/",              HTTP_GET,     static_file_handler          },
-    /* REST API */
+    /* REST API — 核心端点（契约 v1.0，四板一致） */
     { "/api/status",    HTTP_GET,     api_status_handler           },
     { "/api/config",    HTTP_GET,     api_config_get_handler       },
     { "/api/config",    HTTP_POST,    api_config_post_handler      },
+    { "/api/capabilities", HTTP_GET,  api_capabilities_handler     },
+    { "/api/capture",   HTTP_GET,     api_capture_handler          },
+    { "/api/scan",      HTTP_GET,     api_scan_handler             },
+    { "/api/reset",     HTTP_POST,    api_reset_handler            },
+    { "/api/reboot",    HTTP_POST,    api_reboot_handler           },
+    { "/api/auth",      HTTP_GET,     api_auth_handler             },
+    { "/api/time",      HTTP_POST,    api_time_handler             },
+    { "/metrics",       HTTP_GET,     metrics_handler              },
+    /* 能力门控端点 */
     { "/api/led",       HTTP_POST,    api_led_handler              },
+    { "/api/led",       HTTP_GET,     api_led_get_handler          },
     { "/api/ai",        HTTP_POST,    api_ai_handler               },
     { "/api/ai/status", HTTP_GET,     ai_status_get_handler        },
     { "/api/camera",    HTTP_GET,     api_camera_get_handler       },
     { "/api/camera",    HTTP_POST,    api_camera_post_handler      },
-    { "/api/capabilities", HTTP_GET,  api_capabilities_handler     },
+    /* OTA（契约 v1.1：与 seeed 同语义） */
     /* CORS preflight */
     { "/*",             HTTP_OPTIONS, options_handler              },
     /* Catch-all static files */

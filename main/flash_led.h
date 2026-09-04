@@ -55,6 +55,11 @@ esp_err_t flash_led_on(void);
  */
 esp_err_t flash_led_off(void);
 
+/**
+ * @brief Read current flash LED brightness (0-100; 0 if not initialised)
+ */
+uint8_t flash_led_get_brightness(void);
+
 #ifdef __cplusplus
 }
 #endif

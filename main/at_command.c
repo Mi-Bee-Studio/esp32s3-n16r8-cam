@@ -21,6 +21,7 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_camera.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/uart.h"
@@ -80,12 +81,16 @@ static const at_command_t s_commands[] = {
     { "AT+WIFISCAN",  cmd_wifiscan, "Scan for WiFi APs"                      },
     { "AT+CIFSR",     cmd_cifsr,    "Get IP address"                         },
     { "AT+CAMCAP",    cmd_camcap,   "Capture one JPEG frame"                 },
-    { "AT+CAMQUAL",   cmd_camqual,  "AT+CAMQUAL? | AT+CAMQUAL=n (1-63)"      },
-    { "AT+CAMRES",    cmd_camres,   "AT+CAMRES? | AT+CAMRES=n (0-13)"        },
+    { "AT+CAMQUAL",   cmd_camqual,  "AT+CAMQUAL? | AT+CAMQUAL=n (10-63)"     },
+    { "AT+CAMRES",    cmd_camres,   "AT+CAMRES? | AT+CAMRES=n (0-15, board max applies)" },
     { "AT+AIFACE",    cmd_aiface,   "AT+AIFACE? | AT+AIFACE=on/off"          },
     { "AT+AIMOTION",  cmd_aimotion, "AT+AIMOTION? | AT+AIMOTION=on/off"      },
     { "AT+AIQR",      cmd_aiqr,     "AT+AIQR? | AT+AIQR=on/off"              },
-    { "AT+CONFIG",    cmd_config,   "Print all configuration"                },
+    { "AT+STATUS",    cmd_info,     "System status (family core)"            },
+    { "AT+GMR",       cmd_version,  "Firmware version (family core)"         },
+    { "AT+IP",        cmd_cifsr,    "AT+IP? — IP address (family core)"      },
+    { "AT+RESTORE",   cmd_reset,    "Factory reset + reboot (family core)"   },
+    { "AT+CONFIG",    cmd_config,   "Print all configuration (legacy name)"  },
     { "AT+RTSPUSER",  cmd_rtspuser, "AT+RTSPUSER=name"                       },
     { "AT+RTSPPASS",  cmd_rtsppass, "AT+RTSPPASS=pass"                       },
     { "AT+LED",       cmd_led,      "AT+LED=n (0-100 percent)"               },
@@ -183,13 +188,21 @@ static void cmd_info(const char *p)
 {
     (void)p;
     bool connected = wifi_manager_is_connected();
-    printf("Chip:      ESP32-S3\r\n");
-    printf("PSRAM:     8 MB Octal\r\n");
-    printf("Free heap: %lu bytes\r\n", (unsigned long)esp_get_free_heap_size());
-    printf("Free PSRAM:%lu bytes\r\n", (unsigned long)esp_get_free_internal_heap_size());
-    printf("WiFi:      %s\r\n", connected ? "STA connected" : "AP mode (disconnected)");
-    printf("IP:        %s\r\n", wifi_manager_get_ip());
-    printf("Uptime:    %lld s\r\n", (long long)(esp_timer_get_time() / 1000000));
+    printf("Chip:       ESP32-S3\r\n");
+    printf("Board:      GOOUUU N16R8 (OV3660)\r\n");
+    printf("Free heap:  %lu bytes\r\n", (unsigned long)esp_get_free_heap_size());
+    printf("Free PSRAM: %lu bytes\r\n",
+           (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    printf("WiFi:       %s\r\n", connected ? "STA connected" : "AP mode (disconnected)");
+    printf("SSID:       %s\r\n", config_get_wifi_ssid());
+    printf("IP:         %s\r\n", wifi_manager_get_ip());
+    printf("Uptime:     %lld s\r\n", (long long)(esp_timer_get_time() / 1000000));
+    printf("Camera:     res=%u quality=%u\r\n",
+           (unsigned)config_get_cam_framesize(), (unsigned)config_get_cam_quality());
+    printf("AI:         face=%s motion=%s qr=%s\r\n",
+           config_get_ai_face_enable() ? "on" : "off",
+           config_get_ai_motion_enable() ? "on" : "off",
+           config_get_ai_qr_enable() ? "on" : "off");
     printf("OK\r\n");
 }
 
@@ -288,33 +301,64 @@ static void cmd_camcap(const char *p)
 static void cmd_camqual(const char *p)
 {
     if (!p || p[0] == '?' || p[0] == '\0') {
-        printf("Quality: %u\r\n", (unsigned)config_get_cam_quality());
+        printf("Quality: %u  range: [%d-%d]\r\n", (unsigned)config_get_cam_quality(),
+               CAMERA_QUALITY_MIN, CAMERA_QUALITY_MAX);
         printf("OK\r\n");
         return;
     }
     int n = atoi(p);
-    if (n < 1 || n > 63) {
-        printf("ERROR: quality must be 1-63\r\n");
+    if (n < CAMERA_QUALITY_MIN || n > CAMERA_QUALITY_MAX) {
+        printf("ERROR: quality must be %d-%d (fb=w*h/5 budget, PIT-021)\r\n",
+               CAMERA_QUALITY_MIN, CAMERA_QUALITY_MAX);
         return;
     }
     config_set_int_and_save("cam_quality", n);
-    printf("OK — quality set to %d\r\n", n);
+    /* 契约：n16r8 画质变更热重配（同 web POST /api/camera 路径） */
+    esp_err_t ret = camera_reinit(config_get_cam_framesize(), (uint8_t)n);
+    if (ret != ESP_OK) {
+        printf("ERROR: camera reinit failed (%s) — value saved, applies next boot\r\n",
+               esp_err_to_name(ret));
+        return;
+    }
+    printf("OK — quality set to %d (applied)\r\n", n);
 }
 
 static void cmd_camres(const char *p)
 {
     if (!p || p[0] == '?' || p[0] == '\0') {
-        printf("Frame size index: %u\r\n", (unsigned)config_get_cam_framesize());
+        printf("Frame size index: %u  (board max: %u, PIT-021)\r\n",
+               (unsigned)config_get_cam_framesize(),
+               (unsigned)camera_get_effective_max_res());
         printf("OK\r\n");
         return;
     }
     int n = atoi(p);
-    if (n < 0 || n > 13) {
-        printf("ERROR: frame size index must be 0-13\r\n");
+    if (n < 0 || n > 15) {
+        printf("ERROR: frame size index out of range (0-15)\r\n");
+        return;
+    }
+    /* 板级上限：区间校验（PIT-022 修正：此前单值锁定是污染结论的帮凶） */
+    if (n > camera_get_effective_max_res()) {
+        printf("ERROR: exceeds board max %d (measured)\r\n",
+               camera_get_effective_max_res());
+        return;
+    }
+    /* AI 管线硬编码 VGA：非 VGA + 任一 AI 开启 → 拒绝（同 web） */
+    if (n != 10 && (ai_is_enabled(AI_FEATURE_FACE_DETECT) ||
+                    ai_is_enabled(AI_FEATURE_MOTION_DETECT) ||
+                    ai_is_enabled(AI_FEATURE_QR_DECODE))) {
+        printf("ERROR: disable AI to use non-VGA resolution\r\n");
         return;
     }
     config_set_int_and_save("cam_framesize", n);
-    printf("OK — frame size set to %d\r\n", n);
+    /* 契约：n16r8 分辨率变更热重配 */
+    esp_err_t ret = camera_reinit((uint8_t)n, config_get_cam_quality());
+    if (ret != ESP_OK) {
+        printf("ERROR: camera reinit failed (%s) — value saved, applies next boot\r\n",
+               esp_err_to_name(ret));
+        return;
+    }
+    printf("OK — frame size set to %d (applied)\r\n", n);
 }
 
 static void cmd_aiface(const char *p)
@@ -347,7 +391,7 @@ static void cmd_aimotion(const char *p)
         return;
     }
     ai_enable(AI_FEATURE_MOTION_DETECT, on);
-    config_set_bool_and_save("ai_motion_enable", on);
+    config_set_bool_and_save("ai_motion_en", on);   /* NVS 键名 ≤15 字符（PIT-022），JSON 字段名不变 */
     printf("OK — motion detect %s\r\n", on ? "on" : "off");
 }
 

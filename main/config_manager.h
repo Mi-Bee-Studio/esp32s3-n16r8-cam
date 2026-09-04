@@ -62,6 +62,7 @@ esp_err_t config_reset(void);
 
 const char *config_get_wifi_ssid(void);
 const char *config_get_wifi_pass(void);
+const char *config_get_device_name(void);
 uint8_t     config_get_cam_framesize(void);
 uint8_t     config_get_cam_quality(void);
 bool        config_get_ai_face_enable(void);

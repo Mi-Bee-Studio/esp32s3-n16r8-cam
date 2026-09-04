@@ -107,6 +107,7 @@ esp_err_t rtsp_start(void)
 
     const char *ip = wifi_manager_get_ip();
     const char *user = config_get_rtsp_user();
+    const char *pass = config_get_rtsp_pass();
 
     ESP_LOGI(TAG, "Creating RTSP server on %s:%d", ip, RTSP_PORT);
 
@@ -119,6 +120,9 @@ esp_err_t rtsp_start(void)
         .accept_task_stack_size_bytes = 4096,
         .session_task_stack_size_bytes = 8192,
         .control_task_stack_size_bytes = 8192,
+        .auth_username = (user && user[0]) ? user : "admin",
+        .auth_password = (pass && pass[0]) ? pass : "admin",
+        .auth_realm = "MiBee Cam",
     });
 
     /* Track 0 — MJPEG video (payload type 26, RFC 2435) */
