@@ -17,7 +17,10 @@
 #include "ai_pipeline.h"
 #include "esp_log.h"
 #include "esp_err.h"
+#include "esp_system.h"
 #include "esp_heap_caps.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <string.h>
 static const char *TAG = "camera_drv";
 
@@ -45,7 +48,7 @@ static const camera_config_t s_camera_cfg = {
     .pin_href     = CONFIG_CAMERA_PIN_HREF,
     .pin_pclk     = CONFIG_CAMERA_PIN_PCLK,
 
-    .xclk_freq_hz = 20000000,
+    .xclk_freq_hz = 16000000,   /* 2026-09-04 定稿：20M 下 XGA+ 帧损坏（NO-SOI/OVF），16M 实测 SXGA 稳 */
     .ledc_timer   = LEDC_TIMER_0,
     .ledc_channel = LEDC_CHANNEL_0,
 
@@ -290,7 +293,12 @@ esp_err_t camera_reinit(uint8_t framesize, uint8_t quality)
         ESP_LOGE(TAG, "esp_camera_deinit() failed: %s", esp_err_to_name(deinit_err));
     }
 
-    /* 3. Update config in memory and persist */
+    /* 3. Update config in memory and persist（先留旧值：失败路径按旧值回滚。
+     * 2026-09-04 XGA 复测实锤的坑：此前失败路径从 config 读"刚保存的新值"
+     * 去"恢复"，等于用失败档位反复 init，板子留在 fb_get NULL 死循环直到
+     * 人工救） */
+    uint8_t prev_framesize = config_get_cam_framesize();
+    uint8_t prev_quality   = config_get_cam_quality();
     char framesize_str[4];
     char quality_str[4];
     snprintf(framesize_str, sizeof(framesize_str), "%u", (unsigned)framesize);
@@ -306,11 +314,26 @@ esp_err_t camera_reinit(uint8_t framesize, uint8_t quality)
 
     esp_err_t err = esp_camera_init(&cfg);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Camera reinit failed: %s", esp_err_to_name(err));
-        /* Try to restore previous config */
-        cfg.frame_size   = (framesize_t)config_get_cam_framesize();
-        cfg.jpeg_quality = config_get_cam_quality();
-        esp_camera_init(&cfg);
+        ESP_LOGE(TAG, "Camera reinit failed: %s — rolling back to framesize=%u",
+                 esp_err_to_name(err), prev_framesize);
+        /* 回滚配置到旧值并按旧档位重建（勿用 config 现值——那是失败的新档） */
+        char prev_fs_str[4], prev_q_str[4];
+        snprintf(prev_fs_str, sizeof(prev_fs_str), "%u", (unsigned)prev_framesize);
+        snprintf(prev_q_str, sizeof(prev_q_str), "%u", (unsigned)prev_quality);
+        config_set("cam_framesize", prev_fs_str);
+        config_set("cam_quality", prev_q_str);
+        config_save();
+        cfg.frame_size   = (framesize_t)prev_framesize;
+        cfg.jpeg_quality = prev_quality;
+        esp_err_t rb = esp_camera_init(&cfg);
+        if (rb != ESP_OK) {
+            /* 回滚也失败说明驱动被失败 init 楔死（2026-09-04 UXGA 试验实录），
+             * 只有重启能救。boot 路径不走本函数，不会形成重启环。 */
+            ESP_LOGE(TAG, "Rollback init also failed: %s — rebooting to recover",
+                     esp_err_to_name(rb));
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            esp_restart();
+        }
         camera_apply_sensor_settings();
         frame_broadcaster_start();
         if (ai_was_running) ai_start_task();

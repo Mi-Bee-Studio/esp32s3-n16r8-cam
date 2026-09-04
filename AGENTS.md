@@ -439,6 +439,8 @@ NVS 观察项：连续 AT 改 AI 键后出现 `Failed to write NVS key 'ai_motio
   ⚠ 开机择优只在启动时——运行期"弱而不断"不迁移（无 roaming），需要时重启板子即可重选。
 - **分辨率上限双网复核**：GT（主网）与 MiBeeAP2（备用网）上 VGA/SVGA 正常、
   XGA 冷启动采集死**完全一致**——上限 SVGA 与网络无关，维持。
+  （⚠ 该"SVGA 板级极限"结论次日夜被推翻两次——见下方"SXGA 翻案"节：
+  真因是 PSRAM 40MHz + 内部 DRAM 耗尽 + XCLK 20MHz，均与模组/DVP 无关。）
   **方法论纠正**：推流 delivered fps（0.5-0.8fps）是"链路 RTT/丢包 + NVR 双路订阅"
   的投递侧指标，同期板端采集 25-27fps（fbroadcast 日志）——**分辨率上限判定只看
   采集侧**（fb_get 是否出帧 + JPEG SOF 实测尺寸），勿用投递 fps 做依据。
@@ -491,3 +493,41 @@ socket()/connect() 拿不到资源（EMFILE/ENOBUFS）也被计为"httpd 死"，
 **上板实证**：修复前 20:37-20:49 五连重启（2-4.5 分钟间隔）；修复后仅
 20:53 一次**真卡死**正确自愈（探针 TCP 连上但 120s 无应用响应——这正是
 该重启的场景），其后 16+ 分钟零重启、uptime 连续爬升。
+
+
+## 2026-09-05 分辨率翻案至 SXGA（1280×1024）+ 三项连带修复
+
+**结论：板上限 SVGA→SXGA**（`CAMERA_RES_BOARD_MAX=14`），XGA/HD/SXGA 冷启动+
+热重配均 JPEG SOF 实证出图；UXGA init 失败（回滚+自愈重启路径已验证）。
+SXGA 90s 探针：**投递 3.42fps**（308 帧/66KB 均值）——远超 SVGA 时代 0.4-0.8fps，
+PSRAM 提速连带解锁了网络路径。旧"模组/DVP 组合极限"结论**两次都错**：
+
+1. **PSRAM 实际跑在 40MHz**：defaults 注释称"VERBATIM from seeed"但
+   `CONFIG_SPIRAM_SPEED_80M` 行**漏抄**（seeed=80M）。补上后 XGA init 不再
+   `cam_dma_config: DMA buffer 16384 Byte malloc failed`——那才是"XGA 取帧死"
+   的第一层真因（**内部 DRAM 耗尽**，最大空闲块 15.3KB/9.7KB，与 DVP 无关）。
+2. **XCLK 20MHz 下 XGA+ 帧损坏**（`NO-SOI/NO-EOI/EV-EOF-OVF`）：内存修好后
+   浮出的第二层真因。XCLK 降到 **16MHz** 后 XGA/HD/SXGA 全稳（`camera_driver.c`）。
+3. 同时补抄 seeed 的 `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y`（WiFi/lwIP 缓冲
+   迁 PSRAM，腾内部 DRAM——"verbatim"漏抄的第二行）。
+
+**连带修复（同轮提交）**：
+- **camera_reinit 失败路径回滚 bug**：旧代码先用 config 保存新档再 init，失败后
+  从 config 读"刚保存的失败档"去恢复=无限重试死循环。改为留旧值回滚；回滚 init
+  也失败则 1s 后自动重启（boot 路径不走 reinit，无重启环风险）。
+- **AI 任务功能全关时不再解码**：此前无条件 sw_decode_jpeg——VGA 白烧 CPU，
+  SXGA 下 RGB888 3.9MB 必然分配失败逐帧刷错。现解码前查功能开关。
+- **ai_pipeline 全部 TWDT 交互移除**（IDLE1 摘除+每 ≤10ms yield 本就无饿死路径）。
+- **espp__task 补丁**（`patches/espp__task/`，root CMake 拷贝步骤同 led_strip 模板）：
+  删掉 thread_function 里全固件唯一的 `esp_task_wdt_reset` 调用点。
+
+**遗留悬案（open）——task_wdt 洪水**：`esp_task_wdt_reset(707): task not found`
+以 ~150Hz 刷屏（今晨 10:22 即存在；NVR 客户端接入后 ~60-90s 出现）。法证结论：
+全固件静态调用点归零后洪水依旧（ELF 反汇编+地址字面量+全部 .a/.obj 扫描均无第二
+调用者），发射者走非常规路径（函数指针/预构建数据），**未定位**。板子带洪水仍
+可运行（SXGA 3.4fps 流+API 正常），采集器继续盯。下轮建议：JTAG/GDB-stub 构建
+断点 `esp_task_wdt_reset` 取调用栈。
+
+**sdkconfig 纪律提醒**：本仓生成 sdkconfig 现含 PSRAM 80M/WiFi-LWIP/本地密码
+注入（gitignored）。rm sdkconfig 重配会丢密码注入——defaults 改动后应手改生成
+文件或重配后回填 `CONFIG_MIBEE_CAM_DEFAULT_WEB_PASSWORD`。

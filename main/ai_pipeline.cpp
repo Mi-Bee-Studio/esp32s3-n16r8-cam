@@ -178,7 +178,6 @@ static void process_frame(camera_fb_t *fb)
         ESP_LOGW(TAG, "JPEG decode failed, skipping frame");
         return;
     }
-    esp_task_wdt_reset();
 
     /* ---- Face detection ----------------------------------------- */
     if (s_detect && local_enabled[AI_FEATURE_FACE_DETECT]) {
@@ -235,8 +234,6 @@ static void process_frame(camera_fb_t *fb)
     decoded.data = NULL;
 
 #endif /* AI_FACE_DETECT_ENABLED */
-
-    esp_task_wdt_reset();
 
     /* ---- Motion detection --------------------------------------- */
     if (local_enabled[AI_FEATURE_MOTION_DETECT]) {
@@ -295,8 +292,6 @@ static void process_frame(camera_fb_t *fb)
         /* if qr_buf is NULL, skip entirely — quirc_end NOT called */
     }
 
-    esp_task_wdt_reset();
-
     /* ---- Update previous grayscale for next motion diff --------- */
     {
         uint8_t *tmp   = s_prev_gray;
@@ -334,25 +329,18 @@ static void ai_task(void *arg)
         return;
     }
 
-    /* Register with task watchdog — 登记失败时必须跳过后续 reset()，
-     * 否则每 10ms 刷一条 "esp_task_wdt_reset: task not found"
-     * （2026-09-04 XGA 楔死时实测 ~100Hz 刷屏，淹掉一切有效日志） */
-    esp_err_t wdt_err = esp_task_wdt_add(NULL);
-    const bool wdt_ok = (wdt_err == ESP_OK);
-    if (!wdt_ok) {
-        ESP_LOGW(TAG, "esp_task_wdt_add failed: %s (continuing without WDT)",
-                 esp_err_to_name(wdt_err));
-    }
+    /* 2026-09-05 定稿：不再与 TWDT 交互（全部 add/reset/delete 移除）。
+     * 依据：ai_start_task 已把 IDLE1 从 TWDT 摘除（CPU 密集任务标准做法），
+     * 本任务每 ≤10ms 必 yield，不存在饿死路径；而 reset 在任务未登记时
+     * 以 ~150Hz 刷 "task not found" 洪水淹死 CPU（2026-09-04 10:22 与
+     * 22:03 两次实录；链接器级确认全固件仅 ai_pipeline 与 espp__task
+     * 引用该符号，后者有守卫未启用）。 */
 
     /* ---- Processing loop ---------------------------------------- */
     while (s_ai_running) {
-        /* Reset watchdog before potentially blocking on get_frame */
-        if (wdt_ok) esp_task_wdt_reset();
-
         frame_msg_t msg;
         if (!frame_broadcaster_get_frame(s_ai_sub, &msg)) {
             /* No frame yet — yield briefly */
-            if (wdt_ok) esp_task_wdt_reset();
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
@@ -367,7 +355,23 @@ static void ai_task(void *arg)
         fb.height = AI_FRAME_H;
         fb.format = PIXFORMAT_JPEG;
 
-        process_frame(&fb);
+        /* 2026-09-05：功能全关时直接弃帧，不做 JPEG 解码。此前无条件
+         * sw_decode_jpeg：VGA 时代白烧 CPU；SXGA 下 RGB888 需 3.9MB
+         * 必然分配失败，每帧刷 "Failed to alloc output buffer"，且与
+         * task_wdt "task not found" 洪水实测同生同灭（AI 开启时本任务
+         * 走 camera_reinit 强制 VGA，不受影响）。 */
+        bool any_enabled;
+        if (xSemaphoreTake(s_config_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            any_enabled = s_enabled[AI_FEATURE_FACE_DETECT] ||
+                          s_enabled[AI_FEATURE_MOTION_DETECT] ||
+                          s_enabled[AI_FEATURE_QR_DECODE];
+            xSemaphoreGive(s_config_mutex);
+        } else {
+            any_enabled = true;   /* 拿不到锁宁可解码（保旧行为） */
+        }
+        if (any_enabled) {
+            process_frame(&fb);
+        }
 
         frame_broadcaster_release(&msg);
 
@@ -384,8 +388,6 @@ static void ai_task(void *arg)
 
     frame_broadcaster_unsubscribe(s_ai_sub);
     s_ai_sub = NULL;
-
-    if (wdt_ok) esp_task_wdt_delete(NULL);
 
     ESP_LOGI(TAG, "AI task stopped");
     s_ai_task = NULL;

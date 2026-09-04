@@ -40,7 +40,7 @@
  * config_save 整体失败 → “关 AI”存不住 → AI 强制 VGA 钳制每晨复活；
  * 加上校验写成 `!=max` 单值锁）。详见 PIT-021/022。
  * /api/camera 下发 res_cap_source 报告被哪一层钳制（诊断用）。 */
-#define CAMERA_RES_BOARD_MAX 11   /* FRAMESIZE_SVGA */
+#define CAMERA_RES_BOARD_MAX 14   /* FRAMESIZE_SXGA：2026-09-04 定稿（XCLK16M+PSRAM80M+WiFi迁移实测，UXGA init 失败） */
 int camera_get_effective_max_res(void);
 
 /** @brief 上限被哪一层钳制（sensor / board / memory），静态字符串 */
