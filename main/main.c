@@ -19,6 +19,7 @@
 #include "esp_system.h"
 #include "nvs_flash.h"
 #include "esp_spiffs.h"
+#include <errno.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_heap_caps.h"
@@ -40,11 +41,21 @@ static const char *TAG = "mibee_cam";
 
 /* httpd :80 self-heal probe — sends a real HTTP request to localhost:80.
  * TCP connect alone is insufficient: LWIP accepts connections even when
- * httpd has no free worker. Only a real request proves the event loop is alive. */
+ * httpd has no free worker. Only a real request proves the event loop is alive.
+ *
+ * 2026-09-04 自愈误杀修复（PIT-002 家族教训，方案同 seeed/ai-thinker）：
+ * NVR 多路订阅 + 弱链路时 lwIP 池被 TIME_WAIT 挤占，探针自己 socket()/
+ * connect() 拿不到资源（EMFILE/ENOBUFS，串口同时可见 httpd accept(23)），
+ * 旧实现把它计为"httpd 死"→ 2/2 → esp_restart —— 资源紧张被翻译成重启，
+ * 实测 2-7 分钟循环（rst:0xc，无 panic）。修复：资源类失败一律不计数
+ * （池子 15s MSL 后自行恢复）；只有"TCP 连上但应用层无响应"才判疑似卡死。 */
 static bool probe_httpd_port80(void)
 {
     int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (sock < 0) return false;
+    if (sock < 0) {
+        ESP_LOGW(TAG, "httpd probe: no socket available (errno=%d) — not counted", errno);
+        return true;
+    }
 
     struct timeval tv = { .tv_sec = 3, .tv_usec = 0 };
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -67,6 +78,10 @@ static bool probe_httpd_port80(void)
             int n = recv(sock, buf, sizeof(buf), 0);
             ok = (n > 0);
         }
+    } else {
+        /* 本机回环 connect 失败：EMFILE/ENOBUFS 属资源紧张，不计数 */
+        ESP_LOGW(TAG, "httpd probe: connect failed (errno=%d) — not counted", errno);
+        ok = true;
     }
     close(sock);
     return ok;
@@ -250,11 +265,16 @@ void app_main(void)
          * 2 consecutive failures (120s unresponsive) → reboot. */
         static int httpd_stuck_count = 0;
         if (!probe_httpd_port80()) {
-            httpd_stuck_count++;
-            ESP_LOGW(TAG, "httpd :80 probe failed (%d/2)", httpd_stuck_count);
-            if (httpd_stuck_count >= 2) {
-                ESP_LOGE(TAG, "httpd :80 unresponsive for 120s — rebooting");
-                esp_restart();
+            if (!wifi_manager_is_connected()) {
+                httpd_stuck_count = 0;
+                ESP_LOGW(TAG, "httpd probe failed but WiFi down — not counting");
+            } else {
+                httpd_stuck_count++;
+                ESP_LOGW(TAG, "httpd :80 probe failed (%d/2)", httpd_stuck_count);
+                if (httpd_stuck_count >= 2) {
+                    ESP_LOGE(TAG, "httpd :80 unresponsive for 120s — rebooting");
+                    esp_restart();
+                }
             }
         } else {
             httpd_stuck_count = 0;

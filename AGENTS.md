@@ -476,3 +476,18 @@ NVS 观察项：连续 AT 改 AI 键后出现 `Failed to write NVS key 'ai_motio
   （经典 ESP32 无温度传感器、luatos 无 PSRAM、SD/录像/传感器微调随能力省略）。
 - **timezone 不补**：本板无 NTP/时区应用路径（仅 /api/time 手动设 epoch），
   加字段即死字段——等有真实时区消费再随功能加。
+
+## 2026-09-04 深夜：httpd 自愈误杀修复（2-4 分钟重启循环根因，已烧录验证）
+
+**症状**：.119 每 2-4.5 分钟 `rst:0xc`（无 panic），串口签名
+`httpd_accept_conn: error in accept (23)` → `httpd :80 probe failed (2/2)` →
+`unresponsive for 120s — rebooting`。**注意 socket 上限不是原因**——本仓
+`LWIP_MAX_SOCKETS=16`/`TCP_MSL=15000` 早已配置（与 ai-thinker/luatos 同款），
+循环依旧。真因：**探针自愈无资源分类**——NVR 多路订阅挤占 lwIP 池时，探针自己
+socket()/connect() 拿不到资源（EMFILE/ENOBUFS）也被计为"httpd 死"，2/2 即重启。
+**修复（PIT-002 家族教训收尾，方案同 seeed/ai-thinker 两仓验证配方）**：
+① 探针端：socket()/connect() 资源类失败打 WARN 并返回"不计数"，只有
+"TCP 连上但应用层无响应"才计失败；② 调用端：WiFi 未连接时不计数。
+**上板实证**：修复前 20:37-20:49 五连重启（2-4.5 分钟间隔）；修复后仅
+20:53 一次**真卡死**正确自愈（探针 TCP 连上但 120s 无应用响应——这正是
+该重启的场景），其后 16+ 分钟零重启、uptime 连续爬升。
