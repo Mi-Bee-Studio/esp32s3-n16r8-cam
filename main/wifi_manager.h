@@ -56,6 +56,10 @@ bool wifi_manager_is_connected(void);
  */
 const char *wifi_manager_get_ip(void);
 
+/* 双网络（2026-09-04）：当前激活网络与实际 SSID（"primary"/"secondary"/"ap"） */
+const char *wifi_manager_active_net(void);
+const char *wifi_manager_current_ssid(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -248,7 +248,9 @@ idf.py set-target esp32s3
 # Build
 idf.py build
 
-# Flash full image
+# Flash full image  — NOTE flashing policy (root AGENTS.md, 2026-09-04):
+# Web OTA is the default delivery path once /api/ota/* merges (currently WIP,
+# capability ota:false → USB below is the temporary exception for this repo).
 idf.py -p /dev/ttyACM0 flash
 
 # App-only fast iteration (offset 0x10000 is ota_0)
@@ -425,3 +427,20 @@ NVS 观察项：连续 AT 改 AI 键后出现 `Failed to write NVS key 'ai_motio
 - **RTSP 会话创建包 try/catch**（PIT-025）：线程耗尽抛 system_error 曾整机 abort（rst:0xc）。
 - uptime 改 `esp_timer_get_time()`（64 位，tick 回绕免疫）。
 - 统一 logo favicon.svg（四仓同 md5，PIT-026 的 reconfigure 纪律适用）。
+
+## 2026-09-04 下午：双网络支持 + 分辨率上限双网复核
+
+- **本板此前是四仓唯一单 WiFi**（主网弱态即失联无路可退）。已加：
+  `wifi_ssid_2/wifi_pass_2`（NVS 键 ≤15 字符红线遵守）+ `AT+WIFI2=ssid,pass`
+  （查询脱敏；`ssid,` 空串清除）+ 三层择优/转移：
+  ① 开机双网快扫 RSSI 择优（强 ≥8dB 胜出，否则沿用 NVS `wifi_pref/last_net` 上次好网）；
+  ② 关联后 12s 无 IP（DHCP 盲区）直接切网；③ 运行期连败 2 次切网、切换计数
+  ≥6 防乒乓后转 AP 兜底。`/api/status` 新增 `wifi_net`/`current_ssid`。
+  ⚠ 开机择优只在启动时——运行期"弱而不断"不迁移（无 roaming），需要时重启板子即可重选。
+- **分辨率上限双网复核**：GT（主网）与 MiBeeAP2（备用网）上 VGA/SVGA 正常、
+  XGA 冷启动采集死**完全一致**——上限 SVGA 与网络无关，维持。
+  **方法论纠正**：推流 delivered fps（0.5-0.8fps）是"链路 RTT/丢包 + NVR 双路订阅"
+  的投递侧指标，同期板端采集 25-27fps（fbroadcast 日志）——**分辨率上限判定只看
+  采集侧**（fb_get 是否出帧 + JPEG SOF 实测尺寸），勿用投递 fps 做依据。
+- 实测 MiBeeAP2 板位 RTT 仍 ~50-220ms——.119 位置的射频环境两网都一般，
+  网络调优（挪信道/关 HT40）仍是独立课题。

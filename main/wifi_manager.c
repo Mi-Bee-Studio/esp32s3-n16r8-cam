@@ -11,8 +11,11 @@
 #include "status_led.h"
 
 #include <string.h>
+#include <stdlib.h>
 #include "esp_log.h"
 #include "esp_wifi.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 #include "esp_event.h"
 #include "esp_mac.h"
 #include "freertos/FreeRTOS.h"
@@ -34,6 +37,41 @@ static bool  s_ap_started      = false;   /* guard against double AP fallback */
 static bool  s_sta_connected   = false;
 static char  s_ip_str[16]      = "0.0.0.0";
 
+/* ---- 双网络故障转移（2026-09-04，此前本板单 WiFi：主网弱态即失联） ---- */
+static bool s_using_secondary = false;    /* 当前激活的凭据组 */
+static int  s_net_switches    = 0;        /* 本轮开机的网络切换次数（防乒乓） */
+static char s_current_ssid[33] = "";      /* 当前实际连接的 SSID */
+#define NET_FAILS_SWITCH   2              /* 当前网连续失败 N 次后切备用 */
+#define NET_MAX_SWITCHES   6              /* 超过则放弃转 AP */
+#define DHCP_TIMEOUT_MS    12000          /* 关联后无 IP 判 DHCP 盲区（PIT：ai-thinker 教训） */
+
+static bool secondary_configured(void)
+{
+    const char *ssid2 = config_get_wifi_ssid_2();
+    return ssid2 && ssid2[0];
+}
+
+static void save_last_net(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("wifi_pref", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, "last_net", s_using_secondary ? 1 : 0);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
+
+static bool load_last_net(void)
+{
+    nvs_handle_t h;
+    uint8_t v = 0;
+    if (nvs_open("wifi_pref", NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, "last_net", &v);
+        nvs_close(h);
+    }
+    return v == 1;
+}
+
 /* event-group bits */
 #define CONNECTED_BIT   BIT0
 
@@ -46,6 +84,8 @@ static char  s_ip_str[16]      = "0.0.0.0";
 /* ---- forward declarations ---------------------------------------- */
 static void wifi_event_handler(void *arg, esp_event_base_t base,
                                int32_t id, void *event_data);
+static void sta_apply_and_connect(bool secondary);
+static bool failover_to_other_net(const char *why);
 static void get_ap_ssid(char *buf, size_t len);
 static void start_ap(void);
 static void switch_to_ap(void);
@@ -74,19 +114,57 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
 {
     if (base == WIFI_EVENT) {
         switch (id) {
-        case WIFI_EVENT_STA_START:
-            ESP_LOGD(TAG, "STA started, connecting...");
-            esp_wifi_connect();
+        case WIFI_EVENT_STA_START: {
+            /* 双网都已配置时开机择优：快扫一次，信号强 ≥8dB 者胜出；
+             * 否则沿用上次好网。.119 板位主网"弱而不断"，纯失败转移
+             * 永远不会触发，必须在这里比 RSSI。扫描 ~1-2s，仅开机一次。 */
+            const char *p1 = config_get_wifi_ssid();
+            const char *p2 = config_get_wifi_ssid_2();
+            if (p1[0] && p2[0] && strcmp(p1, p2) != 0) {
+                wifi_scan_config_t sc = { 0 };
+                sc.show_hidden = false;
+                if (esp_wifi_scan_start(&sc, true) == ESP_OK) {
+                    uint16_t n = 0;
+                    esp_wifi_scan_get_ap_num(&n);
+                    wifi_ap_record_t *recs = malloc(sizeof(wifi_ap_record_t) * (n ? n : 1));
+                    if (recs && esp_wifi_scan_get_ap_records(&n, recs) == ESP_OK) {
+                        int8_t r1 = -128, r2 = -128;
+                        for (int i = 0; i < n; i++) {
+                            if (strcmp((const char *)recs[i].ssid, p1) == 0 && recs[i].rssi > r1) r1 = recs[i].rssi;
+                            if (strcmp((const char *)recs[i].ssid, p2) == 0 && recs[i].rssi > r2) r2 = recs[i].rssi;
+                        }
+                        free(recs);
+                        bool want2 = s_using_secondary;
+                        if (r1 > -128 && r2 > -128) {
+                            if (r2 - r1 >= 8)       want2 = true;
+                            else if (r1 - r2 >= 8)  want2 = false;
+                            /* 差距 <8dB：保持 last_net */
+                            ESP_LOGI(TAG, "boot pick: '%s' %ddBm vs '%s' %ddBm → %s",
+                                     p1, r1, p2, r2, want2 ? "secondary" : "primary");
+                        } else if (r2 > -128 && r1 == -128) {
+                            want2 = true;   /* 主网不在空中 */
+                        }
+                        s_using_secondary = want2;
+                    } else { free(recs); }
+                }
+            }
+            sta_apply_and_connect(s_using_secondary);
             break;
+        }
 
         case WIFI_EVENT_STA_DISCONNECTED:
             s_sta_connected = false;
             xEventGroupClearBits(s_event_group, CONNECTED_BIT);
             s_sta_retry_count++;
-            ESP_LOGW(TAG, "STA disconnected (retry %d/%d)",
-                     s_sta_retry_count, STA_MAX_RETRIES);
+            ESP_LOGW(TAG, "STA disconnected from '%s' (fail %d)",
+                     s_current_ssid, s_sta_retry_count);
             status_led_set_color(STATUS_LED_RED);
 
+            /* 主网连续失败 → 先试备用网，再谈 AP 兜底 */
+            if (s_sta_retry_count >= NET_FAILS_SWITCH &&
+                failover_to_other_net("connect failures")) {
+                break;
+            }
             if (s_sta_retry_count >= STA_MAX_RETRIES) {
                 ESP_LOGW(TAG, "STA max retries reached, AP fallback");
                 switch_to_ap();
@@ -109,13 +187,61 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
             snprintf(s_ip_str, sizeof(s_ip_str),
                      IPSTR, IP2STR(&evt->ip_info.ip));
             s_sta_retry_count = 0;
+            s_net_switches    = 0;      /* 连上即清零：允许下次掉线再转移 */
             s_sta_connected   = true;
+            save_last_net();
             xEventGroupSetBits(s_event_group, CONNECTED_BIT);
             status_led_set_color(STATUS_LED_GREEN);
             ESP_LOGI(TAG, "WiFi connected, IP: " IPSTR,
                      IP2STR(&evt->ip_info.ip));
         }
     }
+}
+
+/* ------------------------------------------------------------------ */
+/*  STA credential switching                                           */
+/* ------------------------------------------------------------------ */
+
+/** Apply the given network's credentials to the running STA and connect. */
+static void sta_apply_and_connect(bool secondary)
+{
+    s_using_secondary = secondary;
+    const char *ssid = secondary ? config_get_wifi_ssid_2() : config_get_wifi_ssid();
+    const char *pass = secondary ? config_get_wifi_pass_2() : config_get_wifi_pass();
+
+    wifi_config_t sta_config = { 0 };
+    strlcpy((char *)sta_config.sta.ssid, ssid, sizeof(sta_config.sta.ssid));
+    strlcpy((char *)sta_config.sta.password, pass, sizeof(sta_config.sta.password));
+    sta_config.sta.threshold.authmode = WIFI_AUTH_OPEN;  /* auto-negotiate: OPEN~WPA3 */
+    sta_config.sta.pmf_cfg.capable    = true;
+    sta_config.sta.pmf_cfg.required   = false;
+    sta_config.sta.sae_pwe_h2e        = WPA3_SAE_PWE_BOTH;
+    sta_config.sta.listen_interval    = 3;
+
+    strlcpy(s_current_ssid, ssid, sizeof(s_current_ssid));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_config));
+    esp_wifi_connect();
+    ESP_LOGI(TAG, "STA connecting to [%s]: %s",
+             secondary ? "secondary" : "primary", ssid);
+}
+
+/** Switch to the other network if configured; returns true if switched. */
+static bool failover_to_other_net(const char *why)
+{
+    if (s_ap_started) return false;
+    if (s_net_switches >= NET_MAX_SWITCHES) {
+        ESP_LOGW(TAG, "net switch cap reached (%d), AP fallback", s_net_switches);
+        switch_to_ap();
+        return false;
+    }
+    bool target = !s_using_secondary;
+    if (target && !secondary_configured()) return false;   /* nowhere to go */
+    s_net_switches++;
+    s_sta_retry_count = 0;
+    ESP_LOGW(TAG, "%s — switching to %s network (switch %d/%d)",
+             why, target ? "secondary" : "primary", s_net_switches, NET_MAX_SWITCHES);
+    sta_apply_and_connect(target);
+    return true;
 }
 
 /* ------------------------------------------------------------------ */
@@ -188,23 +314,15 @@ static void start_sta(void)
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
 
-    wifi_config_t sta_config = { 0 };
-    strlcpy((char *)sta_config.sta.ssid,
-            config_get_wifi_ssid(),
-            sizeof(sta_config.sta.ssid));
-    strlcpy((char *)sta_config.sta.password,
-            config_get_wifi_pass(),
-            sizeof(sta_config.sta.password));
-    sta_config.sta.threshold.authmode = WIFI_AUTH_OPEN;  /* auto-negotiate: OPEN~WPA3 */
-    sta_config.sta.pmf_cfg.capable    = true;
-    sta_config.sta.pmf_cfg.required   = false;
-    sta_config.sta.sae_pwe_h2e        = WPA3_SAE_PWE_BOTH;  /* WPA3 compat */
-    sta_config.sta.listen_interval    = 3;  /* better multicast reception */
+    /* 上次拿到 IP 的网络优先（ai-thinker 实测 40s→3.3s 的同款修复） */
+    s_using_secondary = load_last_net() && secondary_configured();
 
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_config));
+    const char *ssid = s_using_secondary ? config_get_wifi_ssid_2()
+                                         : config_get_wifi_ssid();
+    strlcpy(s_current_ssid, ssid ? ssid : "", sizeof(s_current_ssid));
+
     ESP_ERROR_CHECK(esp_wifi_start());
-
-    ESP_LOGI(TAG, "STA connecting to: %s", config_get_wifi_ssid());
+    /* STA_START 事件里统一走 sta_apply_and_connect（凭据 + 连接） */
     status_led_set_color(STATUS_LED_RED);
 }
 
@@ -219,20 +337,24 @@ static void start_sta(void)
  */
 static void connection_monitor_task(void *arg)
 {
-    EventBits_t bits = xEventGroupWaitBits(
-        s_event_group, CONNECTED_BIT,
-        pdFALSE,         /* don't clear on exit */
-        pdFALSE,         /* don't require all bits (only one) */
-        pdMS_TO_TICKS(STA_CONNECT_TIMEOUT_MS));
-
-    if (!(bits & CONNECTED_BIT)) {
-        ESP_LOGW(TAG, "STA timeout (%u ms), switching to AP",
-                 (unsigned)STA_CONNECT_TIMEOUT_MS);
-        switch_to_ap();
-    } else {
-        ESP_LOGI(TAG, "STA connection established within timeout");
+    /* 两段式：先给当前网 DHCP_TIMEOUT_MS 拿 IP；关联得上但拿不到 IP 是
+     * DHCP 盲区（主网弱态的典型症状），直接切网而不是干等。 */
+    for (int stage = 0; stage < 2; stage++) {
+        EventBits_t bits = xEventGroupWaitBits(
+            s_event_group, CONNECTED_BIT,
+            pdFALSE, pdFALSE, pdMS_TO_TICKS(DHCP_TIMEOUT_MS));
+        if (bits & CONNECTED_BIT) {
+            ESP_LOGI(TAG, "STA connection established (stage %d)", stage);
+            vTaskDelete(NULL);
+            return;
+        }
+        if (stage == 0 && failover_to_other_net("no IP (DHCP blind spot)")) {
+            continue;   /* second window for the other network */
+        }
+        break;
     }
-
+    ESP_LOGW(TAG, "no IP on either network — AP fallback");
+    switch_to_ap();
     vTaskDelete(NULL);
 }
 
@@ -297,4 +419,15 @@ bool wifi_manager_is_connected(void)
 const char *wifi_manager_get_ip(void)
 {
     return s_ip_str;
+}
+
+const char *wifi_manager_active_net(void)
+{
+    if (s_ap_started) return "ap";
+    return s_using_secondary ? "secondary" : "primary";
+}
+
+const char *wifi_manager_current_ssid(void)
+{
+    return s_current_ssid[0] ? s_current_ssid : config_get_wifi_ssid();
 }

@@ -57,6 +57,43 @@ static void cmd_reset   (const char *p);
 static void cmd_version (const char *p);
 static void cmd_info    (const char *p);
 static void cmd_wifi    (const char *p);
+static void cmd_wifi2   (const char *p);
+static void cmd_wifi2(const char *p)
+{
+    /* AT+WIFI2? — query (masked) */
+    if (!p || p[0] == '?' || p[0] == '\0') {
+        const char *ssid = config_get_wifi_ssid_2();
+        printf("Backup SSID: %s\r\n", (ssid && ssid[0]) ? ssid : "(not set)");
+        printf("Backup Pass: %s\r\n", config_get_wifi_pass_2()[0] ? "****" : "(empty)");
+        printf("Active Net:  %s\r\n", wifi_manager_active_net());
+        printf("OK\r\n");
+        return;
+    }
+    char *ssid = (char *)p;
+    char *comma = strchr(ssid, ',');
+    if (!comma) {
+        printf("ERROR: Usage: AT+WIFI2=ssid,password (empty pass: ssid,)\r\n");
+        return;
+    }
+    *comma = '\0';
+    char *pass = comma + 1;
+    if (strlen(ssid) == 0) {
+        /* ssid, 清空备用网络 */
+        config_set("wifi_ssid_2", "");
+        config_set("wifi_pass_2", "");
+        config_save();
+        printf("OK — backup network cleared, rebooting...\r\n");
+    } else {
+        config_set("wifi_ssid_2", ssid);
+        config_set("wifi_pass_2", pass);
+        config_save();
+        printf("OK — backup WiFi set: SSID='%s', rebooting...\r\n", ssid);
+    }
+    fflush(stdout);
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+}
+
 static void cmd_wifiscan(const char *p);
 static void cmd_cifsr   (const char *p);
 static void cmd_camcap  (const char *p);
@@ -78,6 +115,7 @@ static const at_command_t s_commands[] = {
     { "AT+VERSION",   cmd_version,  "Firmware version"                       },
     { "AT+INFO",      cmd_info,     "System info (heap, PSRAM, IP, uptime)"  },
     { "AT+WIFI",      cmd_wifi,     "AT+WIFI? | AT+WIFI=ssid,password"       },
+    { "AT+WIFI2",     cmd_wifi2,    "AT+WIFI2=ssid,pass (backup network)"    },
     { "AT+WIFISCAN",  cmd_wifiscan, "Scan for WiFi APs"                      },
     { "AT+CIFSR",     cmd_cifsr,    "Get IP address"                         },
     { "AT+CAMCAP",    cmd_camcap,   "Capture one JPEG frame"                 },
@@ -195,6 +233,9 @@ static void cmd_info(const char *p)
            (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     printf("WiFi:       %s\r\n", connected ? "STA connected" : "AP mode (disconnected)");
     printf("SSID:       %s\r\n", config_get_wifi_ssid());
+    printf("Backup SSID: %s\r\n",
+           config_get_wifi_ssid_2()[0] ? config_get_wifi_ssid_2() : "(none)");
+    printf("Active Net: %s\r\n", wifi_manager_active_net());
     printf("IP:         %s\r\n", wifi_manager_get_ip());
     printf("Uptime:     %lld s\r\n", (long long)(esp_timer_get_time() / 1000000));
     printf("Camera:     res=%u quality=%u\r\n",

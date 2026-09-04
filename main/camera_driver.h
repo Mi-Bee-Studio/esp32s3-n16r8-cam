@@ -24,8 +24,11 @@
 #define CAMERA_QUALITY_MIN 10
 #define CAMERA_QUALITY_MAX 63
 
-/* 板级分辨率上限（2026-09-04 两轮上板复测，PIT-021/022 流程）：
- * **SVGA(11) 稳定，XGA(12) 起致命**。
+/* 板级分辨率上限（2026-09-04 两轮上板复测 + 双网复核，PIT-021/022 流程）：
+ * **SVGA(11) 稳定，XGA(12) 起致命**。XGA 楔死在主网(GT)与备用网(MiBeeAP2)
+ * 上完全一致（采集侧 fb_get NULL，与网络无关）。注意：推流 delivered fps
+ * 是链路/NVR 订阅数约束的投递侧指标（实测 0.5-0.8fps 时板端采集仍 25-27fps，
+ * 见 fbroadcast 日志）——判定上限只看采集侧。
  *   VGA：640×480 实拍确认，推流/取帧正常；
  *   SVGA：冷启动后传感器真实输出 800×600（JPEG SOF 实测），帧流正常；
  *   XGA+：冷启动即 esp_camera_fb_get 返回 NULL，取帧死，且会令板子楔死

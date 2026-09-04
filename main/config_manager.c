@@ -46,6 +46,9 @@
 typedef struct {
     char    wifi_ssid[33];
     char    wifi_pass[65];
+    char    wifi_ssid_2[33];   /* 备用网络（2026-09-04：此前本板单 WiFi，
+                                  .119 板位主网弱态失联时无路可退） */
+    char    wifi_pass_2[65];
     uint8_t cam_framesize;
     uint8_t cam_quality;
     bool    ai_face_enable;
@@ -71,6 +74,8 @@ static SemaphoreHandle_t s_config_mutex = NULL;
 static const config_t s_defaults = {
     .wifi_ssid       = "",
     .wifi_pass       = "",
+    .wifi_ssid_2     = "",
+    .wifi_pass_2     = "",
     .cam_framesize   = 10,              /* FRAMESIZE_VGA — safe for OV3660 smoke test */
     .cam_quality     = 12,
     .ai_face_enable  = true,
@@ -114,6 +119,8 @@ typedef struct {
 static const key_entry_t s_keys[] = {
     { "wifi_ssid",       TYPE_STRING, OFF_STR(wifi_ssid)       },
     { "wifi_pass",       TYPE_STRING, OFF_STR(wifi_pass)       },
+    { "wifi_ssid_2",     TYPE_STRING, OFF_STR(wifi_ssid_2)     },
+    { "wifi_pass_2",     TYPE_STRING, OFF_STR(wifi_pass_2)     },
     { "cam_framesize",   TYPE_U8,     OFF_U8(cam_framesize)    },
     { "cam_quality",     TYPE_U8,     OFF_U8(cam_quality)      },
     { "ai_face_enable",  TYPE_U8,     OFF_U8(ai_face_enable)   },
@@ -379,6 +386,8 @@ esp_err_t config_reset(void)
 
 const char *config_get_wifi_ssid(void)      { return s_config.wifi_ssid; }
 const char *config_get_wifi_pass(void)      { return s_config.wifi_pass; }
+const char *config_get_wifi_ssid_2(void)    { return s_config.wifi_ssid_2; }
+const char *config_get_wifi_pass_2(void)    { return s_config.wifi_pass_2; }
 uint8_t     config_get_cam_framesize(void)  { return s_config.cam_framesize; }
 uint8_t     config_get_cam_quality(void)    { return s_config.cam_quality; }
 bool        config_get_ai_face_enable(void) { return s_config.ai_face_enable; }
@@ -418,6 +427,9 @@ cJSON *config_get_json(void)
     cJSON_AddStringToObject(root, "wifi_ssid", s_config.wifi_ssid);
     cJSON_AddStringToObject(root, "wifi_pass",
                             s_config.wifi_pass[0] ? "****" : "");
+    cJSON_AddStringToObject(root, "wifi_ssid_2", s_config.wifi_ssid_2);
+    cJSON_AddStringToObject(root, "wifi_pass_2",
+                            s_config.wifi_pass_2[0] ? "****" : "");
 
     /* AI */
     cJSON_AddBoolToObject(root, "ai_face_enable", s_config.ai_face_enable);

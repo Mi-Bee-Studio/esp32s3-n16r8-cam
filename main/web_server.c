@@ -278,6 +278,8 @@ static esp_err_t api_status_handler(httpd_req_t *req)
     cJSON_AddStringToObject(data, "wifi_ssid", config_get_wifi_ssid());
     cJSON_AddStringToObject(data, "wifi_state",
         wifi_manager_is_connected() ? "connected" : "disconnected");
+    cJSON_AddStringToObject(data, "wifi_net", wifi_manager_active_net());
+    cJSON_AddStringToObject(data, "current_ssid", wifi_manager_current_ssid());
     cJSON_AddStringToObject(data, "ip", wifi_manager_get_ip());
 
     /* Camera — 传感器型号 + 当前分辨率（细节在 /api/camera） */
@@ -328,6 +330,12 @@ static esp_err_t api_config_get_handler(httpd_req_t *req)
         cJSON_AddStringToObject(data, "wifi_pass", "****");
     } else {
         cJSON_AddStringToObject(data, "wifi_pass", "");
+    }
+    cJSON_AddStringToObject(data, "wifi_ssid_2",      config_get_wifi_ssid_2());
+    if (config_get_wifi_pass_2() && config_get_wifi_pass_2()[0]) {
+        cJSON_AddStringToObject(data, "wifi_pass_2", "****");
+    } else {
+        cJSON_AddStringToObject(data, "wifi_pass_2", "");
     }
     cJSON_AddStringToObject(data, "device_name",      config_get_device_name());
     cJSON_AddNumberToObject(data, "cam_framesize",    config_get_cam_framesize());
@@ -394,7 +402,7 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
     bool wifi_changed = false;
     const char *known_keys[] = {
         /* 修复：web_password 此前不在白名单，首次设密实际从未持久化 */
-        "wifi_ssid", "wifi_pass", "web_password", "device_name", "cam_framesize", "cam_quality",
+        "wifi_ssid", "wifi_pass", "wifi_ssid_2", "wifi_pass_2", "web_password", "device_name", "cam_framesize", "cam_quality",
         "ai_face_enable", "ai_motion_enable", "ai_qr_enable",
         "rtsp_user", "rtsp_pass", "onvif_enable",
         "cam_brightness", "cam_contrast", "cam_saturation", "cam_sharpness",
@@ -406,7 +414,9 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
         item = cJSON_GetObjectItem(json, known_keys[i]);
         if (!item) continue;
         if (strcmp(known_keys[i], "wifi_ssid") == 0 ||
-            strcmp(known_keys[i], "wifi_pass") == 0) {
+            strcmp(known_keys[i], "wifi_pass") == 0 ||
+            strcmp(known_keys[i], "wifi_ssid_2") == 0 ||
+            strcmp(known_keys[i], "wifi_pass_2") == 0) {
             wifi_changed = true;
         }
         /* 契约 v1.1：拒绝空/过短密码 */
