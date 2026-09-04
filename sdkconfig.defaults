@@ -46,6 +46,9 @@ CONFIG_CAMERA_PIN_PCLK=13
 CONFIG_CAMERA_PSRAM_DMA=n
 
 # Wi-Fi
+# AMPDU 保持关闭（2026-09-04 复测后维持 =n）：重开 =y 上板实测无增益
+# （ping 仍 ~512ms、无 <ba-add>、推流无改善）且伴随一次原因不明的失联；
+# 本板 ch11 HT40 弱态的网络调优是独立课题（候选：挪信道/关 HT40），勿仅动 AMPDU。
 CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=n
 CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=n
 
@@ -86,3 +89,8 @@ CONFIG_COMPILER_CXX_RTTI=y
 # ESP-DL model location (in flash, not PSRAM)
 CONFIG_HUMAN_FACE_DETECT_MODEL_IN_FLASH_RODATA=y
 CONFIG_FLASH_HUMAN_FACE_DETECT_MSRMNP_S8_V1=y
+
+# TCP buffers for congested high-RTT links (family value, proven on seeed 2026-09-03:
+# default 5760-byte windows cap MJPEG at ~8KB/s on ch11/HT40 ~300ms RTT paths)
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=49152
+CONFIG_LWIP_TCP_WND_DEFAULT=32768
