@@ -20,6 +20,7 @@
  */
 
 #include "config_manager.h"
+#include "sdkconfig.h"
 #include "camera_driver.h"
 
 #include <string.h>
@@ -38,6 +39,9 @@
 
 #define NVS_NAMESPACE  "mibee_cfg"
 #define TAG            "config"
+
+/* 契约 v1.1：家族统一默认管理密码（真实值仅存本地 sdkconfig，仓库只留占位默认） */
+#define DEFAULT_WEB_PASSWORD CONFIG_MIBEE_CAM_DEFAULT_WEB_PASSWORD
 
 /* ------------------------------------------------------------------ */
 /*  Internal state                                                     */
@@ -83,7 +87,7 @@ static const config_t s_defaults = {
     .ai_qr_enable    = true,
     .rtsp_user       = "admin",
     .rtsp_pass       = "admin",
-    .web_password    = "***REMOVED-DEFAULT-PASSWORD***",   /* 契约 v1.1 家族统一默认 */
+    .web_password    = DEFAULT_WEB_PASSWORD,   /* 契约 v1.1 家族统一默认 */
     .onvif_enable    = true,
     .cam_brightness  = 0,
     .cam_contrast    = 0,
@@ -222,7 +226,7 @@ static void password_seed_once(void)
     }
     if (seeded == 1) return;
     ESP_LOGW(TAG, "One-shot password seed: unifying web_password to family default");
-    strlcpy(s_config.web_password, "***REMOVED-DEFAULT-PASSWORD***", sizeof(s_config.web_password));
+    strlcpy(s_config.web_password, DEFAULT_WEB_PASSWORD, sizeof(s_config.web_password));
     config_save();
     if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
         nvs_set_u8(h, "pw_seed_v1", 1);

@@ -87,7 +87,7 @@ The firmware is production-ready with the following modules and features:
 > ONVIF GetSnapshotUri 已指向 `:80/api/capture`。
 >
 > **契约 v1.1（2026-09-02）**：移植 seeed `ota_updater`（`/api/ota`、`/api/ota/info`、
-> `/api/ota/upload`、`/api/ota/spiffs`），`ota:true`；统一默认密码 `***REMOVED-DEFAULT-PASSWORD***`、拒绝 <6 位密码；
+> `/api/ota/upload`、`/api/ota/spiffs`），`ota:true`；统一默认密码（真实值仅存本地 sdkconfig `CONFIG_MIBEE_CAM_DEFAULT_WEB_PASSWORD`，严禁入库）、拒绝 <6 位密码；
 > 修复首次设密未持久化 bug（`known_keys` 白名单曾漏 `web_password`）；api_version=1.1。
 
 All business endpoints use the `/api/` prefix. Returns JSON envelope `{"ok":true,"data":...}` on success, `{"ok":false,"error":"..."}` on failure.
