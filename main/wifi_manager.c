@@ -431,3 +431,21 @@ const char *wifi_manager_current_ssid(void)
 {
     return s_current_ssid[0] ? s_current_ssid : config_get_wifi_ssid();
 }
+
+int wifi_manager_get_rssi(void)
+{
+    wifi_ap_record_t ap;
+    if (s_sta_connected && esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+        return ap.rssi;
+    }
+    return 0;
+}
+
+int wifi_manager_get_channel(void)
+{
+    wifi_ap_record_t ap;
+    if (s_sta_connected && esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+        return ap.primary;
+    }
+    return 0;
+}

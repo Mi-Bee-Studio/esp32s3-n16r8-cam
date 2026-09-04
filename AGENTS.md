@@ -461,3 +461,18 @@ NVS 观察项：连续 AT 改 AI 键后出现 `Failed to write NVS key 'ai_motio
   已改查组件表取名/确认；camera_init 不再硬拒 OV2640（换传感器由 sensor
   层自动收缩候选，符合家族"换板/换传感器自适应"方向）。硬件表中"Sensor ID:
   0x77"为误记，勿再引用。
+
+## 2026-09-04 晚 API parity 补齐（契约 §4 违约修复，已烧录验证）
+
+四板实测矩阵 × SPA 字段消费交叉核对后，本板补齐三个核心 status 字段
+（用户报障"119 无信号显示"的根因即前两个缺失）：
+- **`wifi_rssi`/`wifi_channel`**：`wifi_manager_get_rssi()/get_channel()`
+  （`esp_wifi_sta_get_ap_info`，未连接返回 0）→ SPA 统计条信号芯片 +
+  WiFi 页当前连接行。实测 -47dBm/ch2 正常下发。
+- **`chip_temp`**：S3 片内温度传感器（`esp_driver_tsens`，CMake REQUIRES 已加），
+  量程 (50,125)→(20,100)→(-10,80) 依次回退（跨档驱动拒绝，同 seeed 教训），
+  **惰性安装于 web_server**（首次 /api/status 时装，实测 60°C）。
+- ai-thinker 同轮补 `free_psram`（其板 4MB PSRAM）。剩余差异均为硬件/功能正当
+  （经典 ESP32 无温度传感器、luatos 无 PSRAM、SD/录像/传感器微调随能力省略）。
+- **timezone 不补**：本板无 NTP/时区应用路径（仅 /api/time 手动设 epoch），
+  加字段即死字段——等有真实时区消费再随功能加。

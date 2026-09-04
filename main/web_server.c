@@ -20,6 +20,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "driver/temperature_sensor.h"   /* chip_temp：S3 温度传感器（对齐 seeed/luatos，2026-09-04） */
 
 /* FW_VERSION 由 ota_updater.h（WIP，未入库）提供；此处兜底定义保证
  * 干净克隆可编译——OTA 合入后其同名定义优先生效（#ifndef 守卫）。 */
@@ -46,6 +47,44 @@
 static const char *TAG = "web";
 
 static httpd_handle_t s_server = NULL;
+
+/* ── chip_temp：S3 温度传感器（2026-09-04 API 对齐，方案同 seeed/luatos）──
+ * S3 温度传感器只有固定测量档（[-10,80]/[20,100]/[50,125]/[-30,50]），请求
+ * 区间必须完整落入某一档，跨档被驱动拒绝——按高温档优先依次回退。
+ * 惰性安装（首次 /api/status 请求时），此后驻留复用。 */
+static temperature_sensor_handle_t s_tsens = NULL;
+static float s_chip_temp = 0.0f;
+
+static void chip_temp_ensure(void)
+{
+    if (s_tsens) {
+        return;
+    }
+    static const temperature_sensor_config_t cand[] = {
+        TEMPERATURE_SENSOR_CONFIG_DEFAULT(50, 125),
+        TEMPERATURE_SENSOR_CONFIG_DEFAULT(20, 100),
+        TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 80),
+    };
+    for (size_t i = 0; i < sizeof(cand) / sizeof(cand[0]); i++) {
+        if (temperature_sensor_install(&cand[i], &s_tsens) == ESP_OK &&
+            temperature_sensor_enable(s_tsens) == ESP_OK) {
+            ESP_LOGI(TAG, "Temp sensor ready (range %d~%d°C)",
+                     (int)cand[i].range_min, (int)cand[i].range_max);
+            return;
+        }
+        s_tsens = NULL;
+    }
+    ESP_LOGW(TAG, "Temp sensor init failed — chip_temp stays 0");
+}
+
+static float chip_temp_read(void)
+{
+    chip_temp_ensure();
+    if (s_tsens) {
+        temperature_sensor_get_celsius(s_tsens, &s_chip_temp);
+    }
+    return s_chip_temp;
+}
 
 static void set_cors_headers(httpd_req_t *req);
 
@@ -281,6 +320,10 @@ static esp_err_t api_status_handler(httpd_req_t *req)
     cJSON_AddStringToObject(data, "wifi_net", wifi_manager_active_net());
     cJSON_AddStringToObject(data, "current_ssid", wifi_manager_current_ssid());
     cJSON_AddStringToObject(data, "ip", wifi_manager_get_ip());
+    /* 2026-09-04 API 对齐：SPA 信号芯片与 WiFi 页当前连接行依赖
+     * wifi_rssi/wifi_channel（三姐妹板均已下发，本板此前缺失 → 无信号显示） */
+    cJSON_AddNumberToObject(data, "wifi_rssi", wifi_manager_get_rssi());
+    cJSON_AddNumberToObject(data, "wifi_channel", wifi_manager_get_channel());
 
     /* Camera — 传感器型号 + 当前分辨率（细节在 /api/camera） */
     cJSON_AddStringToObject(data, "camera", camera_sensor_name());
@@ -304,6 +347,8 @@ static esp_err_t api_status_handler(httpd_req_t *req)
         (double)esp_get_minimum_free_heap_size());
     cJSON_AddNumberToObject(data, "free_psram",
         (double)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    /* S3 片内温度（对齐 seeed/luatos；经典 ESP32 无此传感器故不提供） */
+    cJSON_AddNumberToObject(data, "chip_temp", (double)chip_temp_read());
     cJSON_AddNumberToObject(data, "stream_clients",
         mjpeg_stream_client_count());
     cJSON_AddNumberToObject(data, "stream_clients_max", 2);
