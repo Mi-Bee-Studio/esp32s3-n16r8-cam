@@ -15,4 +15,4 @@ dependencies:
   espressif/esp-dl: ^3.3.6
   espressif/human_face_detect: '*'
   espressif/led_strip: ^2.5.0
-  espressif/cjson: '*'
+  espressif/cjson: ~1.2.1   # locked 2026-09-06 (was '*'); other three repos vendor cJSON 1.7.19 in main/
