@@ -1,12 +1,11 @@
 /*
- * MiBee Cam v0.1 — AT Command Interface
+ * at_command.h — MiBee Cam 家族 AT 控制台核心（契约 v1.1）
  *
- * Line-based AT command listener on UART0 (shared with console).
- * Reference: ai-thinker-esp32-cam serial_config pattern, extended for
- * WiFi / camera / AI / config / LED / system control.
+ * 核心文件（at_command.c / at_command.h / at_port.h）四仓 md5 一致；
+ * 板差异见各仓 main/at_port.c（接口契约：at_port.h）。
  */
-
-#pragma once
+#ifndef AT_COMMAND_H
+#define AT_COMMAND_H
 
 #include "esp_err.h"
 
@@ -15,16 +14,14 @@ extern "C" {
 #endif
 
 /**
- * @brief Initialize the AT command listener on UART0.
+ * @brief 启动家族 AT 控制台（初始化 port IO 后台 + 分发任务）
  *
- * Spawns a FreeRTOS task (Core 0, priority 2) that reads serial lines
- * via fgets() and dispatches AT commands.  Call once after all
- * subsystems are initialized.
- *
- * @return ESP_OK on success.
+ * 各板在 main.c 启动序列中调用一次；重复调用返回 ESP_ERR_INVALID_STATE。
  */
 esp_err_t at_command_init(void);
 
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* AT_COMMAND_H */
