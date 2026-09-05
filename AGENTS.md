@@ -249,12 +249,12 @@ idf.py set-target esp32s3
 idf.py build
 
 # Flash full image  — NOTE flashing policy (root AGENTS.md, 2026-09-04):
-# Web OTA is the default delivery path once /api/ota/* merges (currently WIP,
-# capability ota:false → USB below is the temporary exception for this repo).
-idf.py -p /dev/ttyACM0 flash
+# Web OTA is the DEFAULT delivery path since eb65387 (2026-09-05, ota:true 已上板
+# 验证：/api/ota/upload 流式上传 + ota_0/ota_1 翻转)。USB 是回退手段。
+idf.py -p /dev/ttyUSB1 flash
 
 # App-only fast iteration (offset 0x10000 is ota_0)
-esptool --chip esp32s3 -p /dev/ttyACM0 -b 460800 \
+esptool --chip esp32s3 -p /dev/ttyUSB1 -b 460800 \
   --before default-reset --after hard-reset \
   write-flash 0x10000 build/mibee_cam.bin
 
@@ -262,7 +262,9 @@ esptool --chip esp32s3 -p /dev/ttyACM0 -b 460800 \
 idf.py fullclean && idf.py set-target esp32s3 && idf.py build
 ```
 
-- **Serial port**: ESP32-S3 default USB-Serial/JTAG enumerates as `/dev/ttyACM0` (not `ttyUSB*`). Confirm with `ls /dev/serial/by-id/`.
+- **Serial port**: 本板实际走 CH340（USB 转 UART），枚举为 `/dev/ttyUSB1`（非 ACM0 —
+  早期文档写 USB-Serial/JTAG 有误）。CH340 open-reset 陷阱适用：别裸开端口观察，
+  用 `tools/overnight_log.py` 持有。Confirm with `ls /dev/serial/by-id/`.
 - **Baudrate**: 115200 (firmware default).
 - **Permission**: user must be in `uucp` (Arch) or `dialout` (Debian/Ubuntu).
 - **led_strip patch**: `patches/espressif__led_strip/` fixes a compile error (led_strip 2.5.5
@@ -394,9 +396,14 @@ NVS 观察项：连续 AT 改 AI 键后出现 `Failed to write NVS key 'ai_motio
   JPEG fb 按 w*h/5 分配，q<10 复杂场景超预算截帧，PITFALLS PIT-021）。POST
   /api/camera 与 POST /api/config（白名单键）越界 400；camera init/reinit 钳制；
   GET /api/camera 新增 `quality_min/quality_max`（SPA 滑杆钳制，四仓 app.js 已同步）。
-- 分辨率上限见上节：**VGA-only**（同日上板实测后锁定）。
-- 本仓树上有未完成的 OTA 移植 WIP（web_server.c 引用未跟踪的 ota_updater.c/h），
-  以上改动未提交，随 OTA 收尾会话一并处理（PIT-018 纪律）。
+- 分辨率上限见上节：**SXGA**（2026-09-05 二次翻案，PIT-021 二次附录；旧 VGA-only/SVGA 归因均已推翻）。
+- OTA 移植 WIP 已结清（eb65387 合入 ota_updater，ota:true，Web OTA 自测分区翻转通过）。
+- 默认凭据 2026-09-05 轮换：RTSP digest `admin/mibeecam2026`（原 admin/admin）；
+  AP 模式开放网络→WPA2 家族统一 `mibeecam2026`（原 authmode=OPEN）。存量设备 NVS
+  保存的旧值不会自动迁移——需 POST /api/config 改存（本机 .119 已对齐）。
+- RTSP 会话为内存上限约束（每会话 2×8KB 任务栈+缓冲，内部堆紧张时 ~2 并发即
+  ENOSPC "Not enough space" 拒新连接，PIT-025 兜底已生效不炸机）——NVR 占满后
+  手动探测会被拒，属已知 RAM 特性非回归。
 
 ## Do NOT
 
