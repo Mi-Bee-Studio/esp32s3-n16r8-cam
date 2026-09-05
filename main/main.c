@@ -34,6 +34,7 @@
 #include "ai_pipeline.h"
 #include "onvif_discovery.h"
 #include "at_command.h"
+#include "ota_updater.h"
 #include "lwip/sockets.h"
 #include "lwip/inet.h"
 
@@ -213,6 +214,7 @@ void app_main(void)
         ai_enable(AI_FEATURE_FACE_DETECT,   config_get_ai_face_enable());
         ai_enable(AI_FEATURE_MOTION_DETECT, config_get_ai_motion_enable());
         ai_enable(AI_FEATURE_QR_DECODE,     config_get_ai_qr_enable());
+        esp_err_t ota_err = ota_updater_init();
         esp_err_t http_err = web_server_start(80);
         if (http_err == ESP_OK) {
             ESP_LOGI(TAG, "Web server running on port 80");
@@ -262,7 +264,8 @@ void app_main(void)
     /* Idle loop */
     while (1) {
         /* httpd :80 self-heal: probe every 60s cycle.
-         * 2 consecutive failures (120s unresponsive) → reboot. */
+         * 2 consecutive failures (120s unresponsive) → reboot.
+         * WiFi 未连接时不计数（ai-thinker 2026-09-03 同款：掉线≠httpd 死）。 */
         static int httpd_stuck_count = 0;
         if (!probe_httpd_port80()) {
             if (!wifi_manager_is_connected()) {

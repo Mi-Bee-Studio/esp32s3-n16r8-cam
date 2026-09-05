@@ -70,6 +70,17 @@ esp_err_t json_error(httpd_req_t *req, const char *msg, int status);
  */
 char *read_body(httpd_req_t *req, size_t max_len);
 
+/**
+ * @brief Public auth check for other modules (OTA): state A (no password)
+ *        returns 401 SET_PASSWORD_FIRST; state B requires X-Password match.
+ */
+esp_err_t web_server_check_auth(httpd_req_t *req);
+
+/**
+ * @brief Send JSON error with a custom status line (e.g. "429 Too Many Requests").
+ */
+esp_err_t json_error_status(httpd_req_t *req, const char *msg, const char *status_line);
+
 #ifdef __cplusplus
 }
 #endif

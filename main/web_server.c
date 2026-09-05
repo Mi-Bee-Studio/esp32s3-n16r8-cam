@@ -36,6 +36,7 @@
 #include "camera_driver.h"
 #include "esp_camera.h"
 #include "esp_wifi.h"
+#include "ota_updater.h"
 #include "esp_spiffs.h"  /* for stat on SPIFFS files */
 #include <string.h>
 #include <stdlib.h>
@@ -703,6 +704,7 @@ static esp_err_t api_capabilities_handler(httpd_req_t *req)
     cJSON_AddBoolToObject(data, "ai",        true);   /* Has AI pipeline */
     cJSON_AddBoolToObject(data, "sd",        false);  /* No SD card */
     cJSON_AddBoolToObject(data, "audio",     false);  /* No audio */
+    cJSON_AddBoolToObject(data, "ota",       true);   /* OTA web endpoints (v1.1 移植 seeed ota_updater) */
     cJSON_AddBoolToObject(data, "mic",       false);  /* No mic */
     cJSON_AddBoolToObject(data, "flash_led", true);   /* Has flash LED */
     cJSON_AddBoolToObject(data, "recording", false);  /* No recording */
@@ -1158,6 +1160,10 @@ static const uri_entry_t s_uris[] = {
     { "/api/camera",    HTTP_GET,     api_camera_get_handler       },
     { "/api/camera",    HTTP_POST,    api_camera_post_handler      },
     /* OTA（契约 v1.1：与 seeed 同语义） */
+    { "/api/ota",       HTTP_POST,    api_ota_handler              },
+    { "/api/ota/info",  HTTP_GET,     api_ota_info_handler         },
+    { "/api/ota/upload", HTTP_POST,   api_ota_upload_handler       },
+    { "/api/ota/spiffs", HTTP_POST,   api_ota_spiffs_handler       },
     /* CORS preflight */
     { "/*",             HTTP_OPTIONS, options_handler              },
     /* Catch-all static files */
