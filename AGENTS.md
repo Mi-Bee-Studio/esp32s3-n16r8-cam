@@ -521,12 +521,19 @@ PSRAM 提速连带解锁了网络路径。旧"模组/DVP 组合极限"结论**�
 - **espp__task 补丁**（`patches/espp__task/`，root CMake 拷贝步骤同 led_strip 模板）：
   删掉 thread_function 里全固件唯一的 `esp_task_wdt_reset` 调用点。
 
-**遗留悬案（open）——task_wdt 洪水**：`esp_task_wdt_reset(707): task not found`
-以 ~150Hz 刷屏（今晨 10:22 即存在；NVR 客户端接入后 ~60-90s 出现）。法证结论：
-全固件静态调用点归零后洪水依旧（ELF 反汇编+地址字面量+全部 .a/.obj 扫描均无第二
-调用者），发射者走非常规路径（函数指针/预构建数据），**未定位**。板子带洪水仍
-可运行（SXGA 3.4fps 流+API 正常），采集器继续盯。下轮建议：JTAG/GDB-stub 构建
-断点 `esp_task_wdt_reset` 取调用栈。
+**task_wdt 洪水悬案——已破（2026-09-05 结案，PIT-028，修复 `680fb76`）**：
+`esp_task_wdt_reset(707): task not found` 高频刷屏的真因是 **IDLE1 空闲钩子孤儿**：
+本仓 ai_start_task 的 `esp_task_wdt_delete(IDLE1)` 只删订阅条目，不注销空闲钩子
+（IDF 官方退订是 deregister_hook + delete 两步，task_wdt.c:286-287），IDLE1 随后
+每轮空转调**被内联进钩子的** esp_task_wdt_reset → 条目已删 → "task not found"。
+此前"全固件零静态引用"结论是**内联盲区**（符号尸体无人引用≠无人执行）。运行期
+实锤手法：`--wrap=esp_rom_printf` 打印调用者 ra+任务名（v6 该配置下 ESP_LOGE 走
+EARLY→esp_rom_printf 通道，不进 esp_log 族——wrap esp_log 挂空）。修复：
+`sdkconfig.defaults` `CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n`（构建期不订阅，
+官方姿势）+ 删除运行期 delete(IDLE1) 代码；上板验证洪水归零、SXGA 9.4fps 双订阅
+流正常。**注意**：gitignored `sdkconfig` 里对应两行（ESP_ 与无前缀别名）也要手改，
+勿 rm 重生成（会丢本地密码注入）。另：诊断探针勿 wrap ROM 的 `ets_printf`——启动
+早期被调到会挂死进 RTCWDT boot loop（实测翻车）。
 
 **sdkconfig 纪律提醒**：本仓生成 sdkconfig 现含 PSRAM 80M/WiFi-LWIP/本地密码
 注入（gitignored）。rm sdkconfig 重配会丢密码注入——defaults 改动后应手改生成
