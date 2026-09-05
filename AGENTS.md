@@ -142,7 +142,7 @@ This board returns the following from `GET /api/capabilities`:
 | ai | ✅ |
 | sd | ❌ |
 | audio | ❌ |
-| ota | ❌ |
+| ota | ✅（v1.1 起，eb65387 移植 ota_updater，Web OTA 分区翻转自测通过） |
 | mic | ❌ |
 | flash_led | ✅ |
 | recording | ❌ |
