@@ -20,12 +20,5 @@ if(EXISTS ${LED_STRIP_MANAGED_DIR}/src/led_strip_spi_dev.c AND EXISTS ${LED_STRI
     message(STATUS "Applied led_strip patch (esp_heap_caps.h include for IDF v6)")
 endif()
 
-# espp__task: strip the per-iteration esp_task_wdt_reset() — the sole call site
-# in the whole firmware; it spams "task not found" at ~150Hz on n16r8 once NVR
-# clients connect, starving the CPU (2026-09-05). Same source-only pattern.
-set(ESPP_TASK_PATCH_DIR ${CMAKE_SOURCE_DIR}/patches/espp__task)
-set(ESPP_TASK_MANAGED_DIR ${CMAKE_SOURCE_DIR}/managed_components/espp__task)
-if(EXISTS ${ESPP_TASK_MANAGED_DIR}/src/task.cpp AND EXISTS ${ESPP_TASK_PATCH_DIR}/src/task.cpp)
-    file(COPY ${ESPP_TASK_PATCH_DIR}/src/task.cpp DESTINATION ${ESPP_TASK_MANAGED_DIR}/src)
-    message(STATUS "Applied espp__task patch (removed esp_task_wdt_reset loop call)")
-endif()
+# 2026-09-05：espp__task 补丁已回退——洪水真因是 IDLE1 空闲钩子孤儿（PIT-028），
+# 该补丁治的是从未启用的守卫路径，属错误归因产物；上游原样 task.cpp 即可。
