@@ -1,18 +1,25 @@
 /*
- * MiBee Cam v0.1 — NVS-backed config manager
+ * MiBee Cam v0.1 — NVS-backed config manager（家族配置契约 v1.0）
  *
  * Copyright (C) 2024 MiBee Cam Authors
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * NVS namespace: "mibee_cfg"
+ * NVS namespace: "mibee_cfg"（契约 §1：四仓统一逐键格式）
  *
  * Design:
  *   - Individual key-value pairs (NOT a blob) so future firmware versions
  *     can add/remove keys without migration code.
  *   - config_load() reads every known key; NVS_ERR_NOT_FOUND keeps the
- *     compiled default for that key.
- *   - config_save() writes every key then calls nvs_commit().
+ *     compiled default for that key（契约 §1 单键自治：缺键 = 编译默认值）.
+ *   - config_save() writes every key then calls nvs_commit(). A single
+ *     key write failure only WARNs and the batch continues（契约 §1，
+ *     PIT-022 另一半教训：不得因单键失败中止整批写入）.
+ *   - schema_ver (u16) is written on every save; missing on load → seeded
+ *     with the compiled family schema version（契约 §1 版本键）.
+ *   - Renamed keys carry a lazy migration: on load, if the new key is
+ *     missing, the legacy key name is read instead (logged once); the new
+ *     key is written on the next save（契约 §6 n16r8 行：键名对齐）.
  *   - config_set() accepts string values and parses numeric keys as uint8.
  *   - A FreeRTOS mutex protects write paths (config_set, config_save,
  *     config_reset) for safe concurrent access from web server and
@@ -39,6 +46,41 @@
 
 #define NVS_NAMESPACE  "mibee_cfg"
 #define TAG            "config"
+#define KEY_SCHEMA_VER "schema_ver"   /* 契约 §1 家族版本键（u16） */
+#define KEY_PW_SEED    "pw_seed_v1"   /* 契约 v1.1 密码一次性种子标记 */
+
+/* NVS 键名 ≤15 字符（NVS 硬限制）——所有键字面量构建期断言（契约 §1，
+ * PIT-022：超长键曾使整个 config_save() 失败） */
+#define KEY_ASSERT(k) _Static_assert(sizeof(k) <= 16, "NVS key >15 chars: " k)
+KEY_ASSERT("schema_ver");
+KEY_ASSERT("pw_seed_v1");
+KEY_ASSERT("wifi_ssid");
+KEY_ASSERT("wifi_pass");
+KEY_ASSERT("wifi_ssid_2");
+KEY_ASSERT("wifi_pass_2");
+KEY_ASSERT("device_name");
+KEY_ASSERT("timezone");
+KEY_ASSERT("ap_fallback");
+KEY_ASSERT("web_password");
+KEY_ASSERT("cam_framesize");
+KEY_ASSERT("cam_fps");
+KEY_ASSERT("cam_quality");
+KEY_ASSERT("cam_vflip");
+KEY_ASSERT("cam_hmirror");
+KEY_ASSERT("onvif_enable");
+KEY_ASSERT("ai_face_en");
+KEY_ASSERT("ai_motion_en");
+KEY_ASSERT("ai_qr_en");
+KEY_ASSERT("rtsp_user");
+KEY_ASSERT("rtsp_pass");
+KEY_ASSERT("cam_brightness");
+KEY_ASSERT("cam_contrast");
+KEY_ASSERT("cam_saturation");
+KEY_ASSERT("cam_sharpness");
+KEY_ASSERT("xclk_freq_mhz");
+/* 契约对齐前的存量键名（lazy 迁移读取用，见 migrate_lazy_legacy_keys） */
+KEY_ASSERT("ai_face_enable");
+KEY_ASSERT("ai_qr_enable");
 
 /* 契约 v1.1：家族统一默认管理密码（公开默认 mibeecam2026，本地可在 gitignored sdkconfig 覆盖） */
 #define DEFAULT_WEB_PASSWORD CONFIG_MIBEE_CAM_DEFAULT_WEB_PASSWORD
@@ -54,12 +96,14 @@ typedef struct {
                                   .119 板位主网弱态失联时无路可退） */
     char    wifi_pass_2[65];
     uint8_t cam_framesize;
+    uint8_t cam_fps;           /* 契约 §3.1：1-30，default 15（本板暂无消费者，
+                                  persist + expose；ONVIF FrameRateLimit 已接） */
     uint8_t cam_quality;
     bool    ai_face_enable;
     bool    ai_motion_enable;
     bool    ai_qr_enable;
     char    rtsp_user[33];
-    char    rtsp_pass[33];
+    char    rtsp_pass[65];     /* 契约 §3.2：str≤64（原 33 是漂移，对齐） */
     char    web_password[65];
     bool    onvif_enable;
     int8_t  cam_brightness;   /* OV3660 brightness: -2..+2 */
@@ -69,6 +113,11 @@ typedef struct {
     bool    cam_hmirror;      /* horizontal mirror */
     bool    cam_vflip;        /* vertical flip */
     char    device_name[33];  /* 契约 v1.0: 设备名称 */
+    char    timezone[48];     /* 契约 §3.1：POSIX TZ str≤47，空 = UTC */
+    bool    allow_ap_fallback;/* 契约 §3.1：STA 失败兜底 AP（NVS 键 ap_fallback，
+                                 JSON 名 17 字符超 NVS 限，故键名缩短） */
+    uint8_t xclk_freq_mhz;    /* 契约 §3.1/§5：∈{10,16,20}，本板默认 16
+                                 （2026-09-05 实测 20M 下 XGA+ 帧损坏） */
 } config_t;
 
 static config_t s_config;
@@ -81,6 +130,7 @@ static const config_t s_defaults = {
     .wifi_ssid_2     = "",
     .wifi_pass_2     = "",
     .cam_framesize   = 10,              /* FRAMESIZE_VGA — safe for OV3660 smoke test */
+    .cam_fps         = 15,              /* 契约 §3.1 家族默认 */
     .cam_quality     = 12,
     .ai_face_enable  = true,
     .ai_motion_enable = true,
@@ -96,6 +146,9 @@ static const config_t s_defaults = {
     .cam_hmirror     = false,
     .cam_vflip       = false,
     .device_name     = "MiBeeCam",
+    .timezone        = "",               /* 空 = UTC（契约 §3.1） */
+    .allow_ap_fallback = true,           /* 契约 §3.1 家族默认 1 = 保留现行为 */
+    .xclk_freq_mhz   = 16,               /* 契约 §5 板级覆盖：n16r8 = 16 MHz */
 };
 
 /* ------------------------------------------------------------------ */
@@ -121,30 +174,38 @@ typedef struct {
 #define OFF_I8(field)   offsetof(config_t, field), 1u
 
 static const key_entry_t s_keys[] = {
+    /* 键名 = 契约 §3 NVS 键（≤15 字符，KEY_ASSERT 全量断言）。
+     * config_set()/config_key_max_len() 按本表匹配；JSON 字段名与键名
+     * 不同者（allow_ap_fallback）由 web 层映射。 */
     { "wifi_ssid",       TYPE_STRING, OFF_STR(wifi_ssid)       },
     { "wifi_pass",       TYPE_STRING, OFF_STR(wifi_pass)       },
     { "wifi_ssid_2",     TYPE_STRING, OFF_STR(wifi_ssid_2)     },
     { "wifi_pass_2",     TYPE_STRING, OFF_STR(wifi_pass_2)     },
     { "cam_framesize",   TYPE_U8,     OFF_U8(cam_framesize)    },
+    { "cam_fps",         TYPE_U8,     OFF_U8(cam_fps)          },
     { "cam_quality",     TYPE_U8,     OFF_U8(cam_quality)      },
-    { "ai_face_enable",  TYPE_U8,     OFF_U8(ai_face_enable)   },
-    /* PIT-022：NVS 键名上限 15 字符——"ai_motion_enable"(16) 使 nvs_set_u8
-     * 返回 ESP_ERR_NVS_INVALID_NAME，config_save() 全量写键遇错即返回，
-     * 导致每次保存失败且其后所有键（含 ai_qr/rtsp/web_password…）永不落盘。
-     * “AT 关 AI 重启又复活”即此因。键名缩到 12 字符，旧非法键从未写入过。 */
+    /* AI 键名收敛到契约 §3.2（ai_face_en/ai_motion_en/ai_qr_en，JSON 名同步）。
+     * PIT-022：ai_motion_enable(16) 曾使 config_save() 整体失败 → 改
+     * ai_motion_en（旧非法键从未写入过，无需迁移）；ai_face_enable(13)/
+     * ai_qr_enable(12) 合法且有存量数据 → lazy 迁移见
+     * migrate_lazy_legacy_keys()。 */
+    { "ai_face_en",      TYPE_U8,     OFF_U8(ai_face_enable)   },
     { "ai_motion_en",    TYPE_U8,     OFF_U8(ai_motion_enable) },
-    { "ai_qr_enable",    TYPE_U8,     OFF_U8(ai_qr_enable)     },
+    { "ai_qr_en",        TYPE_U8,     OFF_U8(ai_qr_enable)     },
     { "rtsp_user",       TYPE_STRING, OFF_STR(rtsp_user)       },
     { "rtsp_pass",       TYPE_STRING, OFF_STR(rtsp_pass)       },
-    { "web_password",   TYPE_STRING, OFF_STR(web_password)   },
+    { "web_password",    TYPE_STRING, OFF_STR(web_password)    },
     { "onvif_enable",    TYPE_U8,     OFF_U8(onvif_enable)     },
-    { "cam_brightness", TYPE_I8, OFF_I8(cam_brightness) },
-    { "cam_contrast",   TYPE_I8, OFF_I8(cam_contrast)   },
-    { "cam_saturation", TYPE_I8, OFF_I8(cam_saturation) },
-    { "cam_sharpness",  TYPE_I8, OFF_I8(cam_sharpness)  },
-    { "cam_hmirror",    TYPE_U8, OFF_U8(cam_hmirror)    },
-    { "cam_vflip",      TYPE_U8, OFF_U8(cam_vflip)      },
-    { "device_name",    TYPE_STRING, OFF_STR(device_name) },
+    { "cam_brightness",  TYPE_I8,     OFF_I8(cam_brightness)   },
+    { "cam_contrast",    TYPE_I8,     OFF_I8(cam_contrast)     },
+    { "cam_saturation",  TYPE_I8,     OFF_I8(cam_saturation)   },
+    { "cam_sharpness",   TYPE_I8,     OFF_I8(cam_sharpness)    },
+    { "cam_hmirror",     TYPE_U8,     OFF_U8(cam_hmirror)      },
+    { "cam_vflip",       TYPE_U8,     OFF_U8(cam_vflip)        },
+    { "device_name",     TYPE_STRING, OFF_STR(device_name)     },
+    { "timezone",        TYPE_STRING, OFF_STR(timezone)        },
+    { "ap_fallback",     TYPE_U8,     OFF_U8(allow_ap_fallback) },
+    { "xclk_freq_mhz",   TYPE_U8,     OFF_U8(xclk_freq_mhz)    },
 };
 
 #define NUM_KEYS (sizeof(s_keys) / sizeof(s_keys[0]))
@@ -169,7 +230,8 @@ static void *field_ptr(const key_entry_t *k)
 }
 
 
-/* Read a string key from NVS; if missing, keep the default. */
+/* Read a string key from NVS; if missing, keep the default.
+ * 契约 §1 单键自治：读失败只影响该键（WARN），缺键 = 编译默认值。 */
 static esp_err_t read_str_nvs(nvs_handle_t h, const key_entry_t *k)
 {
     char *buf = (char *)field_ptr(k);
@@ -180,10 +242,14 @@ static esp_err_t read_str_nvs(nvs_handle_t h, const key_entry_t *k)
         return ESP_OK;   /* keep default */
     }
     if (err != ESP_OK) {
+        ESP_LOGW(TAG, "read key '%s' failed: %s — keeping default",
+                 k->name, esp_err_to_name(err));
         return err;
     }
     if (len > k->max_len) {
-        len = k->max_len;
+        ESP_LOGW(TAG, "key '%s' value %u bytes > buffer %u — keeping default",
+                 k->name, (unsigned)len, (unsigned)k->max_len);
+        return ESP_ERR_INVALID_SIZE;
     }
     return nvs_get_str(h, k->name, buf, &len);
 }
@@ -196,6 +262,10 @@ static esp_err_t read_u8_nvs(nvs_handle_t h, const key_entry_t *k)
     if (err == ESP_ERR_NVS_NOT_FOUND) {
         return ESP_OK;   /* keep default */
     }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "read key '%s' failed: %s — keeping default",
+                 k->name, esp_err_to_name(err));
+    }
     return err;
 }
 
@@ -207,7 +277,42 @@ static esp_err_t read_i8_nvs(nvs_handle_t h, const key_entry_t *k)
     if (err == ESP_ERR_NVS_NOT_FOUND) {
         return ESP_OK;   /* keep default */
     }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "read key '%s' failed: %s — keeping default",
+                 k->name, esp_err_to_name(err));
+    }
     return err;
+}
+
+/* Lazy key migration（契约 §6 n16r8 行：键名对齐不丢存量数据）。
+ * 新键缺失时回落读旧键名（log once），下次 save 写入新键；幂等——
+ * 新键一旦存在即跳过。ai_motion_enable(16) 从未成功写入 NVS
+ * （PIT-022），不在迁移表内。 */
+static void migrate_lazy_legacy_keys(nvs_handle_t h)
+{
+    static const struct {
+        const char *legacy;
+        const char *current;
+    } renames[] = {
+        { "ai_face_enable", "ai_face_en" },
+        { "ai_qr_enable",   "ai_qr_en"   },
+    };
+
+    for (size_t i = 0; i < sizeof(renames) / sizeof(renames[0]); i++) {
+        const key_entry_t *k = find_key(renames[i].current);
+        uint8_t probe = 0;
+        if (!k || k->type != TYPE_U8) {
+            continue;
+        }
+        if (nvs_get_u8(h, renames[i].current, &probe) == ESP_OK) {
+            continue;   /* new key already present — nothing to do */
+        }
+        if (nvs_get_u8(h, renames[i].legacy, &probe) == ESP_OK) {
+            *(uint8_t *)field_ptr(k) = probe;
+            ESP_LOGW(TAG, "lazy NVS migration: '%s' <- legacy key '%s' (rewritten on next save)",
+                     renames[i].current, renames[i].legacy);
+        }
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -221,7 +326,7 @@ static void password_seed_once(void)
     nvs_handle_t h;
     uint8_t seeded = 0;
     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
-        nvs_get_u8(h, "pw_seed_v1", &seeded);
+        nvs_get_u8(h, KEY_PW_SEED, &seeded);
         nvs_close(h);
     }
     if (seeded == 1) return;
@@ -229,7 +334,7 @@ static void password_seed_once(void)
     strlcpy(s_config.web_password, DEFAULT_WEB_PASSWORD, sizeof(s_config.web_password));
     config_save();
     if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_u8(h, "pw_seed_v1", 1);
+        nvs_set_u8(h, KEY_PW_SEED, 1);
         nvs_commit(h);
         nvs_close(h);
     }
@@ -253,35 +358,70 @@ esp_err_t config_load(void)
         return ESP_ERR_NO_MEM;
     }
 
+    bool have_schema_ver = false;
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &h);
     if (err != ESP_OK) {
         ESP_LOGI(TAG, "No stored config, using defaults");
-        s_config_loaded = true;
-        return ESP_OK;   /* defaults already applied */
+    } else {
+        for (size_t i = 0; i < NUM_KEYS; i++) {
+            const key_entry_t *k = &s_keys[i];
+            if (k->type == TYPE_STRING) {
+                read_str_nvs(h, k);
+            } else if (k->type == TYPE_U8) {
+                read_u8_nvs(h, k);
+            } else if (k->type == TYPE_I8) {
+                read_i8_nvs(h, k);
+            }
+        }
+        /* 改名键 lazy 迁移（契约 §6）：放在表驱动读取之后，仅补新键缺失者 */
+        migrate_lazy_legacy_keys(h);
+
+        uint16_t schema_ver = 0;
+        have_schema_ver = (nvs_get_u16(h, KEY_SCHEMA_VER, &schema_ver) == ESP_OK);
+        nvs_close(h);
     }
 
-    for (size_t i = 0; i < NUM_KEYS; i++) {
-        const key_entry_t *k = &s_keys[i];
-        if (k->type == TYPE_STRING) {
-            read_str_nvs(h, k);
-        } else if (k->type == TYPE_U8) {
-            read_u8_nvs(h, k);
-        } else if (k->type == TYPE_I8) {
-            read_i8_nvs(h, k);
+    /* schema_ver 缺失（契约 §1/§6：本仓逐键本就无版本键）→ 补种 = 1，
+     * 其余缺键保持编译默认。设备数据不动。 */
+    if (!have_schema_ver) {
+        nvs_handle_t hw;
+        if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &hw) == ESP_OK) {
+            esp_err_t werr = nvs_set_u16(hw, KEY_SCHEMA_VER, CONFIG_SCHEMA_VERSION);
+            if (werr == ESP_OK) {
+                werr = nvs_commit(hw);
+            }
+            if (werr != ESP_OK) {
+                ESP_LOGW(TAG, "seed %s failed: %s (retry on next save)",
+                         KEY_SCHEMA_VER, esp_err_to_name(werr));
+            } else {
+                ESP_LOGI(TAG, "Seeded %s=%d (family config schema)",
+                         KEY_SCHEMA_VER, CONFIG_SCHEMA_VERSION);
+            }
+            nvs_close(hw);
         }
     }
 
-    nvs_close(h);
-    /* 板级边界（2026-09-04）：本模组仅 VGA 稳定（PIT-021）；旧配置可能存过
-     * 更高档（当时配置与实际输出脱节）——加载钳制回 VGA */
+    /* 板级边界（契约 §4 加载钳制）：分辨率上限 / fps 域 / xclk 白名单。
+     * 旧配置可能存过越界值（当时配置与实际输出脱节）——加载钳回域内 */
     if (s_config.cam_framesize > CAMERA_RES_BOARD_MAX) {
-        ESP_LOGW(TAG, "Legacy cam_framesize=%u clamped to VGA on load (module constraint)",
-                 s_config.cam_framesize);
+        ESP_LOGW(TAG, "Legacy cam_framesize=%u clamped to board max %d on load",
+                 s_config.cam_framesize, CAMERA_RES_BOARD_MAX);
         s_config.cam_framesize = CAMERA_RES_BOARD_MAX;
     }
+    if (s_config.cam_fps == 0 || s_config.cam_fps > 30) {
+        ESP_LOGW(TAG, "cam_fps=%u out of range, defaulting to 15", s_config.cam_fps);
+        s_config.cam_fps = 15;
+    }
+    if (s_config.xclk_freq_mhz != 10 && s_config.xclk_freq_mhz != 16 &&
+        s_config.xclk_freq_mhz != 20) {
+        ESP_LOGW(TAG, "xclk_freq_mhz=%u not in {10,16,20}, defaulting to 16",
+                 s_config.xclk_freq_mhz);
+        s_config.xclk_freq_mhz = 16;
+    }
+
     password_seed_once();
-    ESP_LOGI(TAG, "Config loaded from NVS");
+    ESP_LOGI(TAG, "Config loaded from NVS (schema v%d)", CONFIG_SCHEMA_VERSION);
     s_config_loaded = true;
     return ESP_OK;
 }
@@ -324,9 +464,17 @@ esp_err_t config_set(const char *key, const char *value)
     return ESP_OK;
 }
 
+size_t config_key_max_len(const char *key)
+{
+    const key_entry_t *k = find_key(key);
+    if (!k || k->type != TYPE_STRING) {
+        return 0;   /* non-string key (or unknown) — no length domain */
+    }
+    return k->max_len;   /* buffer size incl. NUL */
+}
+
 esp_err_t config_save(void)
 {
-
     if (xSemaphoreTake(s_config_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
@@ -338,34 +486,41 @@ esp_err_t config_save(void)
         return err;
     }
 
+    /* 契约 §1 单键自治（PIT-022 教训）：单键写失败只 WARN、批次继续，
+     * 最后统一 commit。旧实现遇错即返回，其后所有键永不落盘。 */
+    bool all_ok = true;
     for (size_t i = 0; i < NUM_KEYS; i++) {
         const key_entry_t *k = &s_keys[i];
+        esp_err_t werr;
         if (k->type == TYPE_STRING) {
-            const char *val = (const char *)field_ptr(k);
-            err = nvs_set_str(h, k->name, val);
+            werr = nvs_set_str(h, k->name, (const char *)field_ptr(k));
         } else if (k->type == TYPE_U8) {
-            uint8_t val = *(const uint8_t *)field_ptr(k);
-            err = nvs_set_u8(h, k->name, val);
-        } else if (k->type == TYPE_I8) {
-            int8_t val = *(const int8_t *)field_ptr(k);
-            err = nvs_set_i8(h, k->name, val);
+            werr = nvs_set_u8(h, k->name, *(const uint8_t *)field_ptr(k));
+        } else {
+            werr = nvs_set_i8(h, k->name, *(const int8_t *)field_ptr(k));
         }
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to write NVS key '%s': %s",
-                     k->name, esp_err_to_name(err));
-            nvs_close(h);
-            xSemaphoreGive(s_config_mutex);
-            return err;
+        if (werr != ESP_OK) {
+            ESP_LOGW(TAG, "write NVS key '%s' failed: %s — key skipped, batch continues",
+                     k->name, esp_err_to_name(werr));
+            all_ok = false;
         }
+    }
+
+    /* schema_ver 随每次保存落盘（契约 §1） */
+    esp_err_t werr = nvs_set_u16(h, KEY_SCHEMA_VER, CONFIG_SCHEMA_VERSION);
+    if (werr != ESP_OK) {
+        ESP_LOGW(TAG, "write NVS key '%s' failed: %s — key skipped",
+                 KEY_SCHEMA_VER, esp_err_to_name(werr));
+        all_ok = false;
     }
 
     err = nvs_commit(h);
     nvs_close(h);
 
-    if (err == ESP_OK) {
-        ESP_LOGI(TAG, "Config saved to NVS");
-    } else {
+    if (err != ESP_OK) {
         ESP_LOGE(TAG, "NVS commit failed: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "Config saved to NVS%s", all_ok ? "" : " (partial — see key warnings above)");
     }
 
     xSemaphoreGive(s_config_mutex);
@@ -393,6 +548,7 @@ const char *config_get_wifi_pass(void)      { return s_config.wifi_pass; }
 const char *config_get_wifi_ssid_2(void)    { return s_config.wifi_ssid_2; }
 const char *config_get_wifi_pass_2(void)    { return s_config.wifi_pass_2; }
 uint8_t     config_get_cam_framesize(void)  { return s_config.cam_framesize; }
+uint8_t     config_get_cam_fps(void)        { return s_config.cam_fps; }
 uint8_t     config_get_cam_quality(void)    { return s_config.cam_quality; }
 bool        config_get_ai_face_enable(void) { return s_config.ai_face_enable; }
 bool        config_get_ai_motion_enable(void) { return s_config.ai_motion_enable; }
@@ -409,6 +565,9 @@ bool   config_get_cam_hmirror(void)    { return s_config.cam_hmirror; }
 bool   config_get_cam_vflip(void)      { return s_config.cam_vflip; }
 const char *config_get_web_password(void) { return s_config.web_password; }
 const char *config_get_device_name(void)  { return s_config.device_name; }
+const char *config_get_timezone(void)     { return s_config.timezone; }
+bool   config_get_allow_ap_fallback(void) { return s_config.allow_ap_fallback; }
+uint8_t config_get_xclk_freq_mhz(void)    { return s_config.xclk_freq_mhz; }
 
 cJSON *config_get_json(void)
 {
@@ -417,8 +576,12 @@ cJSON *config_get_json(void)
         return NULL;
     }
 
+    /* 家族 schema 版本（契约 §1） */
+    cJSON_AddNumberToObject(root, "schema_version", CONFIG_SCHEMA_VERSION);
+
     /* Camera settings */
     cJSON_AddNumberToObject(root, "cam_framesize", s_config.cam_framesize);
+    cJSON_AddNumberToObject(root, "cam_fps", s_config.cam_fps);
     cJSON_AddNumberToObject(root, "cam_quality", s_config.cam_quality);
     cJSON_AddNumberToObject(root, "cam_brightness", s_config.cam_brightness);
     cJSON_AddNumberToObject(root, "cam_contrast", s_config.cam_contrast);
@@ -426,6 +589,7 @@ cJSON *config_get_json(void)
     cJSON_AddNumberToObject(root, "cam_sharpness", s_config.cam_sharpness);
     cJSON_AddBoolToObject(root, "cam_hmirror", s_config.cam_hmirror);
     cJSON_AddBoolToObject(root, "cam_vflip", s_config.cam_vflip);
+    cJSON_AddNumberToObject(root, "xclk_freq_mhz", s_config.xclk_freq_mhz);
 
     /* WiFi */
     cJSON_AddStringToObject(root, "wifi_ssid", s_config.wifi_ssid);
@@ -435,10 +599,15 @@ cJSON *config_get_json(void)
     cJSON_AddStringToObject(root, "wifi_pass_2",
                             s_config.wifi_pass_2[0] ? "****" : "");
 
-    /* AI */
-    cJSON_AddBoolToObject(root, "ai_face_enable", s_config.ai_face_enable);
-    cJSON_AddBoolToObject(root, "ai_motion_enable", s_config.ai_motion_enable);
-    cJSON_AddBoolToObject(root, "ai_qr_enable", s_config.ai_qr_enable);
+    /* Device / locale（契约 §3.1） */
+    cJSON_AddStringToObject(root, "device_name", s_config.device_name);
+    cJSON_AddStringToObject(root, "timezone", s_config.timezone);
+    cJSON_AddBoolToObject(root, "allow_ap_fallback", s_config.allow_ap_fallback);
+
+    /* AI（JSON 名随契约 §3.2 收敛为 ai_*_en） */
+    cJSON_AddBoolToObject(root, "ai_face_en", s_config.ai_face_enable);
+    cJSON_AddBoolToObject(root, "ai_motion_en", s_config.ai_motion_enable);
+    cJSON_AddBoolToObject(root, "ai_qr_en", s_config.ai_qr_enable);
 
     /* RTSP / ONVIF */
     cJSON_AddStringToObject(root, "rtsp_user", s_config.rtsp_user);

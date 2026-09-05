@@ -169,10 +169,18 @@ This board returns the following from `GET /api/capabilities`:
 
 ### Configuration
 
-- NVS namespace: "mibee_cfg"
-- 16 keys total
-- Supported keys: wifi_ssid, wifi_pass, cam_framesize, cam_quality, ai_face_enable, ai_motion_enable, ai_qr_enable, rtsp_user, rtsp_pass, onvif_enable, cam_brightness, cam_contrast, cam_saturation, cam_sharpness, cam_hmirror, cam_vflip
-- Type support: TYPE_U8 (uint8), TYPE_I8 (int8)
+- NVS namespace: "mibee_cfg"（家族配置契约 v1.0，`docs/config-contract.md`；
+  逐键 + `schema_ver=1`，键名 ≤15 字符构建期断言，单键写失败只 WARN 不中止批次）
+- 26 keys（含 schema_ver）。Supported keys: wifi_ssid, wifi_pass, wifi_ssid_2,
+  wifi_pass_2, cam_framesize, cam_fps, cam_quality, xclk_freq_mhz,
+  ai_face_en, ai_motion_en, ai_qr_en（2026-09-05 契约对齐改名，旧键
+  ai_face_enable/ai_qr_enable 惰性迁移）, rtsp_user, rtsp_pass, onvif_enable,
+  cam_brightness, cam_contrast, cam_saturation, cam_sharpness, cam_hmirror,
+  cam_vflip, device_name, timezone, ap_fallback（JSON 名 allow_ap_fallback）
+- Type support: TYPE_STRING / TYPE_U8 / TYPE_I8
+- GET/POST /api/config 字段名 = 契约 JSON 名；POST 校验矩阵 = 契约 §4
+  （cam_quality 10-63、cam_fps 1-30、cam_framesize ∈ supported_resolutions、
+  xclk ∈{10,16,20}、web_password ≥6、timezone 1-47、字符串先验长度拒绝）
 
 ## Octal PSRAM (non-negotiable on this module)
 

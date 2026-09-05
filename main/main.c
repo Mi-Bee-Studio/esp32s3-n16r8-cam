@@ -15,6 +15,8 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
 #include "esp_log.h"
 #include "esp_system.h"
 #include "nvs_flash.h"
@@ -134,6 +136,18 @@ void app_main(void)
         ESP_LOGE(TAG, "NVS init failed: %s", esp_err_to_name(ret));
     }
     config_load();
+
+    /* 时区（契约 §3.1）：非空即在启动时应用——本板无 NTP，时区供
+     * /api/time 手动设时后的 localtime() 换算使用（POST /api/config
+     * 改 timezone 时立即重设，同 seeed/ai-thinker） */
+    {
+        const char *tz = config_get_timezone();
+        if (tz && tz[0]) {
+            setenv("TZ", tz, 1);
+            tzset();
+            ESP_LOGI(TAG, "Timezone applied: %s", tz);
+        }
+    }
 
     /* ---- 2. SPIFFS for Web UI ---------------------------------------- */
     init_spiffs();

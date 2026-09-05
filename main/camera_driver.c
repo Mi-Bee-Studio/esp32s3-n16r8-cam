@@ -48,7 +48,10 @@ static const camera_config_t s_camera_cfg = {
     .pin_href     = CONFIG_CAMERA_PIN_HREF,
     .pin_pclk     = CONFIG_CAMERA_PIN_PCLK,
 
-    .xclk_freq_hz = 16000000,   /* 2026-09-04 定稿：20M 下 XGA+ 帧损坏（NO-SOI/OVF），16M 实测 SXGA 稳 */
+    .xclk_freq_hz = 16000000,   /* 编译期基准；运行期由 config xclk_freq_mhz
+                                   覆盖（契约 §3.1/§5，本板默认 16——
+                                   2026-09-04 定稿：20M 下 XGA+ 帧损坏
+                                   （NO-SOI/OVF），16M 实测 SXGA 稳） */
     .ledc_timer   = LEDC_TIMER_0,
     .ledc_channel = LEDC_CHANNEL_0,
 
@@ -170,6 +173,7 @@ esp_err_t camera_init(void)
     camera_config_t cfg = s_camera_cfg;
     cfg.frame_size   = (framesize_t)framesize;
     cfg.jpeg_quality = quality;
+    cfg.xclk_freq_hz = (uint32_t)config_get_xclk_freq_mhz() * 1000000U;
 
     esp_err_t err = esp_camera_init(&cfg);
     if (err != ESP_OK) {
@@ -311,6 +315,7 @@ esp_err_t camera_reinit(uint8_t framesize, uint8_t quality)
     camera_config_t cfg = s_camera_cfg;
     cfg.frame_size   = (framesize_t)framesize;
     cfg.jpeg_quality = quality;
+    cfg.xclk_freq_hz = (uint32_t)config_get_xclk_freq_mhz() * 1000000U;
 
     esp_err_t err = esp_camera_init(&cfg);
     if (err != ESP_OK) {

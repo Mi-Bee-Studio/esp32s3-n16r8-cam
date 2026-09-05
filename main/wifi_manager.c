@@ -89,6 +89,7 @@ static bool failover_to_other_net(const char *why);
 static void get_ap_ssid(char *buf, size_t len);
 static void start_ap(void);
 static void switch_to_ap(void);
+static bool ap_fallback(void);   /* AP 兜底闸门（allow_ap_fallback，契约 §3.1） */
 
 /* ------------------------------------------------------------------ */
 /*  helpers                                                            */
@@ -166,11 +167,14 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
                 break;
             }
             if (s_sta_retry_count >= STA_MAX_RETRIES) {
-                ESP_LOGW(TAG, "STA max retries reached, AP fallback");
-                switch_to_ap();
-            } else {
-                esp_wifi_connect();
+                ESP_LOGW(TAG, "STA max retries reached");
+                if (ap_fallback()) {
+                    break;
+                }
+                /* 兜底被禁：分批继续重试（清零计数避免每事件刷 WARN） */
+                s_sta_retry_count = 0;
             }
+            esp_wifi_connect();
             break;
 
         case WIFI_EVENT_AP_START:
@@ -230,8 +234,12 @@ static bool failover_to_other_net(const char *why)
 {
     if (s_ap_started) return false;
     if (s_net_switches >= NET_MAX_SWITCHES) {
-        ESP_LOGW(TAG, "net switch cap reached (%d), AP fallback", s_net_switches);
-        switch_to_ap();
+        ESP_LOGW(TAG, "net switch cap reached (%d)", s_net_switches);
+        if (ap_fallback()) {
+            return false;
+        }
+        /* 兜底被禁：清零切换计数，继续在两网间轮换重试 */
+        s_net_switches = 0;
         return false;
     }
     bool target = !s_using_secondary;
@@ -306,6 +314,20 @@ static void switch_to_ap(void)
     start_ap();
 }
 
+/** AP 兜底闸门（契约 §3.1 allow_ap_fallback，NVS 键 ap_fallback，默认 1
+ *  = 保留现行为）。返回 true = 已进入 AP；false = 兜底被禁，调用方按
+ *  各自节奏继续 STA 重试。无凭据时的首次 start_ap()（provisioning）
+ *  不受此闸门约束。 */
+static bool ap_fallback(void)
+{
+    if (!config_get_allow_ap_fallback()) {
+        ESP_LOGW(TAG, "AP fallback disabled (allow_ap_fallback=0) — keep retrying STA");
+        return false;
+    }
+    switch_to_ap();
+    return true;
+}
+
 /* ------------------------------------------------------------------ */
 /*  STA mode                                                           */
 /* ------------------------------------------------------------------ */
@@ -355,8 +377,8 @@ static void connection_monitor_task(void *arg)
         }
         break;
     }
-    ESP_LOGW(TAG, "no IP on either network — AP fallback");
-    switch_to_ap();
+    ESP_LOGW(TAG, "no IP on either network");
+    ap_fallback();   /* 兜底被禁时仅告警；STA 断线事件的重连循环继续 */
     vTaskDelete(NULL);
 }
 

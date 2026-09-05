@@ -15,6 +15,7 @@
 
 #include "onvif_service.h"
 #include "wifi_manager.h"
+#include "config_manager.h"
 #include "rtsp_server.h"
 #include "esp_log.h"
 #include "esp_mac.h"
@@ -232,7 +233,7 @@ static esp_err_t handle_get_profiles(httpd_req_t *req)
         "</tt:Resolution>"
         "<tt:Quality>5</tt:Quality>"
         "<tt:RateControl>"
-        "<tt:FrameRateLimit>15</tt:FrameRateLimit>"
+        "<tt:FrameRateLimit>%d</tt:FrameRateLimit>"
         "<tt:EncodingInterval>1</tt:EncodingInterval>"
         "<tt:BitrateLimit>4096</tt:BitrateLimit>"
         "</tt:RateControl>"
@@ -240,7 +241,8 @@ static esp_err_t handle_get_profiles(httpd_req_t *req)
         "</trt:Profiles>"
         "</trt:GetProfilesResponse>"
         "</soap:Body>"
-        "</soap:Envelope>");
+        "</soap:Envelope>",
+        (int)config_get_cam_fps());   /* 契约 §3.1 cam_fps 消费者（原硬编码 15） */
 
     httpd_resp_set_type(req, "application/soap+xml");
     httpd_resp_send(req, resp, len);

@@ -416,7 +416,7 @@ static void cmd_aiface(const char *p)
         return;
     }
     ai_enable(AI_FEATURE_FACE_DETECT, on);
-    config_set_bool_and_save("ai_face_enable", on);
+    config_set_bool_and_save("ai_face_en", on);   /* 契约 §3.2 键名（≤15 字符，PIT-022） */
     printf("OK — face detect %s\r\n", on ? "on" : "off");
 }
 
@@ -433,7 +433,7 @@ static void cmd_aimotion(const char *p)
         return;
     }
     ai_enable(AI_FEATURE_MOTION_DETECT, on);
-    config_set_bool_and_save("ai_motion_en", on);   /* NVS 键名 ≤15 字符（PIT-022），JSON 字段名不变 */
+    config_set_bool_and_save("ai_motion_en", on);   /* 契约 §3.2 键名（PIT-022：NVS ≤15 字符） */
     printf("OK — motion detect %s\r\n", on ? "on" : "off");
 }
 
@@ -450,7 +450,7 @@ static void cmd_aiqr(const char *p)
         return;
     }
     ai_enable(AI_FEATURE_QR_DECODE, on);
-    config_set_bool_and_save("ai_qr_enable", on);
+    config_set_bool_and_save("ai_qr_en", on);   /* 契约 §3.2 键名（≤15 字符，PIT-022） */
     printf("OK — QR decode %s\r\n", on ? "on" : "off");
 }
 

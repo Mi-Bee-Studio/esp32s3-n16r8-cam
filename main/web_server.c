@@ -370,6 +370,9 @@ static esp_err_t api_config_get_handler(httpd_req_t *req)
         return json_error(req, "Out of memory", HTTPD_500_INTERNAL_SERVER_ERROR);
     }
 
+    /* 家族 schema 版本（契约 §1；字段名与 ai-thinker 一致） */
+    cJSON_AddNumberToObject(data, "schema_version",  CONFIG_SCHEMA_VERSION);
+
     cJSON_AddStringToObject(data, "wifi_ssid",        config_get_wifi_ssid());
     /* Mask password */
     if (config_get_wifi_pass() && config_get_wifi_pass()[0]) {
@@ -384,11 +387,16 @@ static esp_err_t api_config_get_handler(httpd_req_t *req)
         cJSON_AddStringToObject(data, "wifi_pass_2", "");
     }
     cJSON_AddStringToObject(data, "device_name",      config_get_device_name());
+    cJSON_AddStringToObject(data, "timezone",         config_get_timezone());
+    cJSON_AddBoolToObject(data,   "allow_ap_fallback", config_get_allow_ap_fallback());
     cJSON_AddNumberToObject(data, "cam_framesize",    config_get_cam_framesize());
+    cJSON_AddNumberToObject(data, "cam_fps",          config_get_cam_fps());
     cJSON_AddNumberToObject(data, "cam_quality",      config_get_cam_quality());
-    cJSON_AddBoolToObject(data,   "ai_face_enable",   config_get_ai_face_enable());
-    cJSON_AddBoolToObject(data,   "ai_motion_enable", config_get_ai_motion_enable());
-    cJSON_AddBoolToObject(data,   "ai_qr_enable",     config_get_ai_qr_enable());
+    cJSON_AddNumberToObject(data, "xclk_freq_mhz",    config_get_xclk_freq_mhz());
+    /* AI JSON 名随契约 §3.2 收敛为 ai_*_en */
+    cJSON_AddBoolToObject(data,   "ai_face_en",       config_get_ai_face_enable());
+    cJSON_AddBoolToObject(data,   "ai_motion_en",     config_get_ai_motion_enable());
+    cJSON_AddBoolToObject(data,   "ai_qr_en",         config_get_ai_qr_enable());
     cJSON_AddStringToObject(data, "rtsp_user",        config_get_rtsp_user());
     if (config_get_rtsp_pass() && config_get_rtsp_pass()[0]) {
         cJSON_AddStringToObject(data, "rtsp_pass", "****");
@@ -442,14 +450,17 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
             return json_error(req, "unauthorized", HTTPD_401_UNAUTHORIZED);
         }
     }
-    /* Iterate over known config keys and apply via config_set() */
+    /* Iterate over known config keys and apply via config_set()
+     * 白名单 = 契约 §3 JSON 字段名；校验矩阵 = 契约 §4（越界一律 400）。 */
     cJSON *item;
     int updated = 0;
     bool wifi_changed = false;
+    bool tz_changed = false;
     const char *known_keys[] = {
-        /* 修复：web_password 此前不在白名单，首次设密实际从未持久化 */
-        "wifi_ssid", "wifi_pass", "wifi_ssid_2", "wifi_pass_2", "web_password", "device_name", "cam_framesize", "cam_quality",
-        "ai_face_enable", "ai_motion_enable", "ai_qr_enable",
+        "wifi_ssid", "wifi_pass", "wifi_ssid_2", "wifi_pass_2",
+        "web_password", "device_name", "timezone", "allow_ap_fallback",
+        "cam_framesize", "cam_fps", "cam_quality", "xclk_freq_mhz",
+        "ai_face_en", "ai_motion_en", "ai_qr_en",
         "rtsp_user", "rtsp_pass", "onvif_enable",
         "cam_brightness", "cam_contrast", "cam_saturation", "cam_sharpness",
         "cam_hmirror", "cam_vflip",
@@ -457,46 +468,118 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
     };
 
     for (int i = 0; known_keys[i]; i++) {
-        item = cJSON_GetObjectItem(json, known_keys[i]);
+        const char *key = known_keys[i];
+        item = cJSON_GetObjectItem(json, key);
         if (!item) continue;
-        if (strcmp(known_keys[i], "wifi_ssid") == 0 ||
-            strcmp(known_keys[i], "wifi_pass") == 0 ||
-            strcmp(known_keys[i], "wifi_ssid_2") == 0 ||
-            strcmp(known_keys[i], "wifi_pass_2") == 0) {
+        if (strcmp(key, "wifi_ssid") == 0 ||
+            strcmp(key, "wifi_pass") == 0 ||
+            strcmp(key, "wifi_ssid_2") == 0 ||
+            strcmp(key, "wifi_pass_2") == 0) {
             wifi_changed = true;
         }
-        /* 契约 v1.1：拒绝空/过短密码 */
-        if (strcmp(known_keys[i], "web_password") == 0) {
-            if (strlen(item->valuestring) < 6) {
+
+        /* JSON 名 → NVS 键映射：allow_ap_fallback(17) 超 NVS 15 字符限，
+         * 契约 §3.1 键名 ap_fallback */
+        const char *cfg_key =
+            (strcmp(key, "allow_ap_fallback") == 0) ? "ap_fallback" : key;
+
+        /* —— 字符串字段：先验长度拒绝（契约 §4：不静默截断凭据） —— */
+        if (cJSON_IsString(item)) {
+            const char *val = item->valuestring;
+            if (strcmp(val, "****") == 0) {
+                continue;   /* masked value echoed back — no change */
+            }
+            size_t maxlen = config_key_max_len(cfg_key);
+            if (maxlen == 0) {
+                continue;   /* numeric key sent as string — ignore */
+            }
+            size_t vlen = strlen(val);
+            if (strcmp(key, "timezone") == 0) {
+                /* POSIX TZ，契约 §3.1 str≤47（§4 的 1-64 以缓冲域为准收紧） */
+                if (vlen == 0 || vlen > maxlen - 1) {
+                    char msg[80];
+                    snprintf(msg, sizeof(msg), "timezone must be 1-%u characters",
+                             (unsigned)(maxlen - 1));
+                    cJSON_Delete(json);
+                    return json_error(req, msg, HTTPD_400_BAD_REQUEST);
+                }
+                tz_changed = true;
+            } else if (vlen > maxlen - 1) {
+                char msg[96];
+                snprintf(msg, sizeof(msg), "%s too long (max %u characters)",
+                         key, (unsigned)(maxlen - 1));
+                cJSON_Delete(json);
+                return json_error(req, msg, HTTPD_400_BAD_REQUEST);
+            }
+            /* 契约 v1.1：拒绝空/过短密码 */
+            if (strcmp(key, "web_password") == 0 && vlen < 6) {
                 cJSON_Delete(json);
                 return json_error(req, "web_password must be at least 6 characters", HTTPD_400_BAD_REQUEST);
             }
+            if (config_set(cfg_key, val) == ESP_OK) {
+                updated++;
+            }
+            continue;
         }
-        /* 画质边界（2026-09-04，驱动不变量）：q<10 撞 esp32-camera 的 w*h/5
-         * JPEG fb 预算产生截断帧，PIT-021 */
-        if (strcmp(known_keys[i], "cam_quality") == 0 && cJSON_IsNumber(item)) {
-            if (item->valueint < CAMERA_QUALITY_MIN || item->valueint > CAMERA_QUALITY_MAX) {
+
+        if (!cJSON_IsBool(item) && !cJSON_IsNumber(item)) {
+            continue;
+        }
+        int val = item->valueint;
+
+        /* —— 契约 §4 数值域校验（越界 400）—— */
+        if (strcmp(key, "cam_quality") == 0) {
+            /* 画质边界（2026-09-04，驱动不变量）：q<10 撞 esp32-camera 的
+             * w*h/5 JPEG fb 预算产生截断帧，PIT-021 */
+            if (val < CAMERA_QUALITY_MIN || val > CAMERA_QUALITY_MAX) {
                 char msg[64];
                 snprintf(msg, sizeof(msg), "cam_quality out of range (%d-%d)",
                          CAMERA_QUALITY_MIN, CAMERA_QUALITY_MAX);
                 cJSON_Delete(json);
                 return json_error(req, msg, HTTPD_400_BAD_REQUEST);
             }
-        }
-
-        char value_str[64];
-        if (cJSON_IsBool(item) || cJSON_IsNumber(item)) {
-            snprintf(value_str, sizeof(value_str), "%d", item->valueint);
-        } else if (cJSON_IsString(item)) {
-            if (strcmp(item->valuestring, "****") == 0) {
-                continue;  /* unchanged */
+        } else if (strcmp(key, "cam_fps") == 0) {
+            if (val < 1 || val > 30) {
+                cJSON_Delete(json);
+                return json_error(req, "cam_fps out of range (1-30)", HTTPD_400_BAD_REQUEST);
             }
-            snprintf(value_str, sizeof(value_str), "%s", item->valuestring);
-        } else {
-            continue;
+        } else if (strcmp(key, "cam_framesize") == 0) {
+            /* 合法域 = 板 supported_resolutions（契约 §2：三层上限交集，
+             * 与 GET /api/camera 动态生成的 10..effective_max 同源） */
+            int eff_max = camera_get_effective_max_res();
+            if (val < 10 || val > eff_max) {
+                char msg[96];
+                snprintf(msg, sizeof(msg),
+                         "cam_framesize %d unsupported (max %d, cap source: %s)",
+                         val, eff_max, camera_res_cap_source());
+                cJSON_Delete(json);
+                return json_error(req, msg, HTTPD_400_BAD_REQUEST);
+            }
+        } else if (strcmp(key, "xclk_freq_mhz") == 0) {
+            if (val != 10 && val != 16 && val != 20) {
+                cJSON_Delete(json);
+                return json_error(req, "xclk_freq_mhz must be 10, 16 or 20", HTTPD_400_BAD_REQUEST);
+            }
+        } else if (strcmp(key, "allow_ap_fallback") == 0) {
+            if (val != 0 && val != 1) {
+                cJSON_Delete(json);
+                return json_error(req, "allow_ap_fallback must be 0 or 1", HTTPD_400_BAD_REQUEST);
+            }
+        } else if (strcmp(key, "cam_brightness") == 0 ||
+                   strcmp(key, "cam_contrast") == 0 ||
+                   strcmp(key, "cam_saturation") == 0 ||
+                   strcmp(key, "cam_sharpness") == 0) {
+            if (val < -2 || val > 2) {
+                char msg[64];
+                snprintf(msg, sizeof(msg), "%s out of range (-2..+2)", key);
+                cJSON_Delete(json);
+                return json_error(req, msg, HTTPD_400_BAD_REQUEST);
+            }
         }
 
-        if (config_set(known_keys[i], value_str) == ESP_OK) {
+        char value_str[16];
+        snprintf(value_str, sizeof(value_str), "%d", val);
+        if (config_set(cfg_key, value_str) == ESP_OK) {
             updated++;
         }
     }
@@ -505,6 +588,13 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
 
     if (updated > 0) {
         config_save();
+    }
+
+    /* timezone 立即生效（契约 §3.1，同 seeed/ai-thinker）：本板无 NTP，
+     * 供 /api/time 手动设时后的 localtime() 换算使用 */
+    if (tz_changed) {
+        setenv("TZ", config_get_timezone(), 1);
+        tzset();
     }
 
     if (wifi_changed) {
@@ -596,7 +686,7 @@ static esp_err_t api_ai_handler(httpd_req_t *req)
 
     item = cJSON_GetObjectItem(json, "face");
     if (item && cJSON_IsBool(item)) {
-        config_set("ai_face_enable", item->valueint ? "1" : "0");
+        config_set("ai_face_en", item->valueint ? "1" : "0");   /* 契约 §3.2 键名（≤15 字符，PIT-022） */
         ai_enable(AI_FEATURE_FACE_DETECT, item->valueint ? true : false);
         ESP_LOGI(TAG, "AI face detection %s", item->valueint ? "enabled" : "disabled");
         updated++;
@@ -612,7 +702,7 @@ static esp_err_t api_ai_handler(httpd_req_t *req)
 
     item = cJSON_GetObjectItem(json, "qr");
     if (item && cJSON_IsBool(item)) {
-        config_set("ai_qr_enable", item->valueint ? "1" : "0");
+        config_set("ai_qr_en", item->valueint ? "1" : "0");   /* 契约 §3.2 键名 */
         ai_enable(AI_FEATURE_QR_DECODE, item->valueint ? true : false);
         ESP_LOGI(TAG, "AI QR detection %s", item->valueint ? "enabled" : "disabled");
         updated++;
