@@ -553,19 +553,10 @@ esp_err_t ai_start_task(void)
 
     ESP_LOGI(TAG, "AI task created on core 1, stack=24576, prio=5");
 
-#if !CONFIG_FREERTOS_UNICORE
-    TaskHandle_t idle1 = xTaskGetIdleTaskHandleForCore(1);
-    if (idle1) {
-        esp_err_t werr = esp_task_wdt_delete(idle1);
-        if (werr == ESP_OK) {
-            ESP_LOGI(TAG, "Removed IDLE1 from task watchdog (CPU-intensive AI task)");
-        } else if (werr == ESP_ERR_INVALID_STATE) {
-            ESP_LOGD(TAG, "IDLE1 not subscribed to task watchdog");
-        } else {
-            ESP_LOGW(TAG, "esp_task_wdt_delete(IDLE1) failed: %s", esp_err_to_name(werr));
-        }
-    }
-#endif
+    /* 不做运行期 esp_task_wdt_delete(IDLE1)：只删订阅条目、不注销空闲钩子，
+     * IDLE1 随后每轮空转调 esp_task_wdt_reset → "task not found" 洪水
+     * （2026-09-05 --wrap esp_rom_printf 实锤 IDLE1/ra=task_wdt.c:707）。
+     * IDLE1 改由 sdkconfig.defaults 的 CHECK_IDLE_TASK_CPU1=n 构建期摘除。 */
     return ESP_OK;
 }
 

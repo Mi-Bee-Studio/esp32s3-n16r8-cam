@@ -31,7 +31,10 @@ CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
 CONFIG_ESP_TASK_WDT=y
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
-CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=y
+# CPU1=OFF：AI 任务常驻 core 1，运行期 esp_task_wdt_delete(IDLE1) 只删订阅条目
+# 不注销空闲钩子 → IDLE1 每轮空转调 esp_task_wdt_reset 刷 "task not found" 洪水
+# （2026-09-05 实锤，IDLE1 + ra→task_wdt.c:707）。官方做法是构建期就不订阅。
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
 
 # Camera — GOOUUU pin mapping (NOT XIAO/seeed)
 CONFIG_CAMERA_PIN_PWDN=-1
