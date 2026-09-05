@@ -121,7 +121,7 @@ esp_err_t rtsp_start(void)
         .session_task_stack_size_bytes = 8192,
         .control_task_stack_size_bytes = 8192,
         .auth_username = (user && user[0]) ? user : "admin",
-        .auth_password = (pass && pass[0]) ? pass : "admin",
+        .auth_password = (pass && pass[0]) ? pass : "mibeecam2026",
         .auth_realm = "MiBee Cam",
     });
 

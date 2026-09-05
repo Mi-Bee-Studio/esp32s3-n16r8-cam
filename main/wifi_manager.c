@@ -260,7 +260,9 @@ static void start_ap(void)
     get_ap_ssid((char *)ap_config.ap.ssid, sizeof(ap_config.ap.ssid));
     ap_config.ap.channel         = AP_CHANNEL;
     ap_config.ap.max_connection  = AP_MAX_CONNECTIONS;
-    ap_config.ap.authmode        = WIFI_AUTH_OPEN;   /* open AP */
+    /* 2026-09-05 轮换：开放 AP → WPA2，家族统一公开入门密码（mibeecam2026） */
+    ap_config.ap.authmode        = WIFI_AUTH_WPA2_PSK;
+    strlcpy((char *)ap_config.ap.password, "mibeecam2026", sizeof(ap_config.ap.password));
     ap_config.ap.beacon_interval = 100;
 
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
