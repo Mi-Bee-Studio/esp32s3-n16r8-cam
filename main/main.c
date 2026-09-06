@@ -40,7 +40,7 @@
 #include "lwip/sockets.h"
 #include "lwip/inet.h"
 
-static const char *TAG = "mibee_cam";
+static const char *TAG = "main";
 
 /* httpd :80 self-heal probe — sends a real HTTP request to localhost:80.
  * TCP connect alone is insufficient: LWIP accepts connections even when

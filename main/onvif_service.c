@@ -148,7 +148,7 @@ static esp_err_t handle_get_device_information(httpd_req_t *req)
         "<soap:Body>"
         "<tds:GetDeviceInformationResponse>"
         "<tds:Manufacturer>MiBee</tds:Manufacturer>"
-        "<tds:Model>MiBee Cam</tds:Model>"
+        "<tds:Model>MiBeeCam</tds:Model>"
         "<tds:FirmwareVersion>" ONVIF_FW_VER "</tds:FirmwareVersion>"
         "<tds:SerialNumber>%s</tds:SerialNumber>"
         "<tds:HardwareId>ESP32-S3-N16R8</tds:HardwareId>"

@@ -33,7 +33,7 @@
 #include "freertos/semphr.h"
 #include <string.h>
 
-static const char *TAG = "fbroadcast";
+static const char *TAG = "frame_broadcaster";
 
 /* ------------------------------------------------------------------ */
 /*  Internal structures                                                */

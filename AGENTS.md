@@ -457,7 +457,7 @@ NVS 观察项：连续 AT 改 AI 键后出现 `Failed to write NVS key 'ai_motio
   （⚠ 该"SVGA 板级极限"结论次日夜被推翻两次——见下方"SXGA 翻案"节：
   真因是 PSRAM 40MHz + 内部 DRAM 耗尽 + XCLK 20MHz，均与模组/DVP 无关。）
   **方法论纠正**：推流 delivered fps（0.5-0.8fps）是"链路 RTT/丢包 + NVR 双路订阅"
-  的投递侧指标，同期板端采集 25-27fps（fbroadcast 日志）——**分辨率上限判定只看
+  的投递侧指标，同期板端采集 25-27fps（frame_broadcaster 日志）——**分辨率上限判定只看
   采集侧**（fb_get 是否出帧 + JPEG SOF 实测尺寸），勿用投递 fps 做依据。
 - 实测 MiBeeAP2 板位 RTT 仍 ~50-220ms——.119 位置的射频环境两网都一般，
   网络调优（挪信道/关 HT40）仍是独立课题。

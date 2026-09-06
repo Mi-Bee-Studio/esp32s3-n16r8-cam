@@ -24,7 +24,7 @@
 #include "esp_netif.h"
 #include "lwip/ip4_addr.h"
 
-static const char *TAG = "wifi_mgr";
+static const char *TAG = "wifi_manager";
 
 /* ---- module state ------------------------------------------------- */
 

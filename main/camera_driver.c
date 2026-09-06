@@ -22,7 +22,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <string.h>
-static const char *TAG = "camera_drv";
+static const char *TAG = "camera_driver";
 
 /* ------------------------------------------------------------------ */
 /*  Camera pin mapping — sourced from sdkconfig.defaults via Kconfig   */

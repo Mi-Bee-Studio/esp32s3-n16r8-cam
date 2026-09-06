@@ -45,7 +45,7 @@
 #include <sys/time.h>
 #include <time.h>
 
-static const char *TAG = "web";
+static const char *TAG = "web_server";
 
 static httpd_handle_t s_server = NULL;
 
