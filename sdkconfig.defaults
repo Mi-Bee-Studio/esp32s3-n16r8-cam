@@ -104,3 +104,7 @@ CONFIG_FLASH_HUMAN_FACE_DETECT_MSRMNP_S8_V1=y
 # default 5760-byte windows cap MJPEG at ~8KB/s on ch11/HT40 ~300ms RTT paths)
 CONFIG_LWIP_TCP_SND_BUF_DEFAULT=49152
 CONFIG_LWIP_TCP_WND_DEFAULT=32768
+
+# ESPectre CSI 运动感知（2026-09-06 家族推广，PIT-034）：栅格 pps 是链路预算，
+# 四仓统一 10（拥塞/弱链路下 admitted 才能过 70% 槽占用下限）。
+CONFIG_ESPECTRE_CSI_TARGET_PPS=10

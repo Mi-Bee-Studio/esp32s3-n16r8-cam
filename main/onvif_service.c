@@ -14,6 +14,7 @@
  */
 
 #include "onvif_service.h"
+#include "onvif_events.h"   /* 契约 v1.5：Pull-Point 事件服务（n16r8 的 GetCapabilities 早已广告 events_service XAddr，本接入使其成真） */
 #include "wifi_manager.h"
 #include "config_manager.h"
 #include "rtsp_server.h"
@@ -459,6 +460,9 @@ esp_err_t onvif_register_handlers(httpd_handle_t server)
     } else {
         ESP_LOGI(TAG, "Registered /onvif/media_service");
     }
+
+    /* 契约 v1.5：Pull-Point 事件服务（MotionAlarm ← CSI 运动） */
+    onvif_events_register(server);
 
     return ESP_OK;
 }

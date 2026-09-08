@@ -29,6 +29,7 @@
 #include "camera_driver.h"
 #include "config_manager.h"
 #include "wifi_manager.h"
+#include "csi_motion.h"
 #include "web_server.h"
 #include "mjpeg_streamer.h"
 #include "rtsp_server.h"
@@ -161,6 +162,9 @@ void app_main(void)
             ESP_LOGE(TAG, "WiFi manager init failed: %s", esp_err_to_name(wf_err));
         }
     }
+
+    /* ---- 3a. ESPectre CSI motion sensing (optional, after WiFi) ------- */
+    csi_motion_init();
 
     /* ---- 4. Camera init + flash LED probe ------------------------- */
     {

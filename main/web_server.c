@@ -279,6 +279,21 @@ static esp_err_t static_file_handler(httpd_req_t *req)
         else if (strcmp(ext, ".html") == 0)    type = "text/html";
     }
 
+    /* gzip 协商（PIT-038，对齐 seeed/ai/luatos）：客户端支持且 SPIFFS 有
+     * <path>.gz 时优先发送（tools/compress_ui.py 产物，~4x 缩身）。 */
+    char accept_enc[64] = {0};
+    bool serving_gz = false;
+    if (httpd_req_get_hdr_value_str(req, "Accept-Encoding", accept_enc, sizeof(accept_enc)) == ESP_OK &&
+        strstr(accept_enc, "gzip") != NULL) {
+        char gz_path[600];
+        snprintf(gz_path, sizeof(gz_path), "%s.gz", filepath);
+        struct stat st;
+        if (stat(gz_path, &st) == 0) {
+            strcpy(filepath, gz_path);
+            serving_gz = true;
+        }
+    }
+
     FILE *f = fopen(filepath, "r");
     if (!f) {
         httpd_resp_send_404(req);
@@ -287,6 +302,9 @@ static esp_err_t static_file_handler(httpd_req_t *req)
 
     set_cors_headers(req);
     httpd_resp_set_type(req, type);
+    if (serving_gz) {
+        httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+    }
 
     char buf[4096];
     size_t n;
@@ -404,6 +422,7 @@ static esp_err_t api_config_get_handler(httpd_req_t *req)
         cJSON_AddStringToObject(data, "rtsp_pass", "");
     }
     cJSON_AddBoolToObject(data,   "onvif_enable",     config_get_onvif_enable());
+    cJSON_AddBoolToObject(data,   "onvif_events",     config_get_onvif_events());   /* 契约 v1.5 */
     cJSON_AddNumberToObject(data, "cam_brightness", config_get_cam_brightness());
     cJSON_AddNumberToObject(data, "cam_contrast",   config_get_cam_contrast());
     cJSON_AddNumberToObject(data, "cam_saturation", config_get_cam_saturation());
@@ -461,7 +480,7 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
         "web_password", "device_name", "timezone", "allow_ap_fallback",
         "cam_framesize", "cam_fps", "cam_quality", "xclk_freq_mhz",
         "ai_face_en", "ai_motion_en", "ai_qr_en",
-        "rtsp_user", "rtsp_pass", "onvif_enable",
+        "rtsp_user", "rtsp_pass", "onvif_enable", "onvif_events",
         "cam_brightness", "cam_contrast", "cam_saturation", "cam_sharpness",
         "cam_hmirror", "cam_vflip",
         NULL
@@ -789,7 +808,7 @@ static esp_err_t api_capabilities_handler(httpd_req_t *req)
     }
     
     /* 契约 v1.0：12 个布尔能力位 + api_version/wifi_scan（见 docs/api-contract.md） */
-    cJSON_AddStringToObject(data, "api_version", "1.3");
+    cJSON_AddStringToObject(data, "api_version", "1.5");
     cJSON_AddBoolToObject(data, "wifi_scan", true);
     cJSON_AddBoolToObject(data, "ai",        true);   /* Has AI pipeline */
     cJSON_AddBoolToObject(data, "sd",        false);  /* No SD card */
@@ -804,6 +823,12 @@ static esp_err_t api_capabilities_handler(httpd_req_t *req)
     cJSON_AddBoolToObject(data, "websocket", false);  /* No WebSocket */
     cJSON_AddBoolToObject(data, "mdns",      true);   /* Has mDNS */
     
+
+#if CONFIG_MIBEE_CSI_MOTION
+    /* 契约 v1.4：WiFi CSI 运动感知（编译期门控，恒定；true ⇒ /ws csi_status 心跳） */
+    cJSON_AddBoolToObject(data, "csi_motion", true);
+    cJSON_AddBoolToObject(data, "onvif_events", true);   /* 契约 v1.5：ONVIF MotionAlarm 事件服务 */
+#endif
     return json_ok(req, data);
 }
 
@@ -1296,7 +1321,7 @@ esp_err_t web_server_start(uint16_t port)
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port        = port;
-    config.max_uri_handlers   = NUM_URIS + 2;   /* room for future endpoints */
+    config.max_uri_handlers   = NUM_URIS + 4;   /* 2 ONVIF + events_service（v1.5）+ 富余 */
     config.stack_size         = 16384;
     config.max_open_sockets   = 7;
     config.uri_match_fn       = httpd_uri_match_wildcard;

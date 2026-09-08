@@ -68,6 +68,7 @@ KEY_ASSERT("cam_quality");
 KEY_ASSERT("cam_vflip");
 KEY_ASSERT("cam_hmirror");
 KEY_ASSERT("onvif_enable");
+KEY_ASSERT("onvif_events");
 KEY_ASSERT("ai_face_en");
 KEY_ASSERT("ai_motion_en");
 KEY_ASSERT("ai_qr_en");
@@ -106,6 +107,7 @@ typedef struct {
     char    rtsp_pass[65];     /* 契约 §3.2：str≤64（原 33 是漂移，对齐） */
     char    web_password[65];
     bool    onvif_enable;
+    bool    onvif_events;   /* 契约 v1.5：ONVIF MotionAlarm 生成开关（默认关） */
     int8_t  cam_brightness;   /* OV3660 brightness: -2..+2 */
     int8_t  cam_contrast;     /* OV3660 contrast: -2..+2 */
     int8_t  cam_saturation;   /* OV3660 saturation: -2..+2 */
@@ -139,6 +141,7 @@ static const config_t s_defaults = {
     .rtsp_pass       = "mibeecam2026",   /* 2026-09-05 轮换：对外公开默认统一 mibeecam2026 */
     .web_password    = DEFAULT_WEB_PASSWORD,   /* 契约 v1.1 家族统一默认 */
     .onvif_enable    = true,
+    .onvif_events    = false,
     .cam_brightness  = 0,
     .cam_contrast    = 0,
     .cam_saturation  = 0,
@@ -196,6 +199,7 @@ static const key_entry_t s_keys[] = {
     { "rtsp_pass",       TYPE_STRING, OFF_STR(rtsp_pass)       },
     { "web_password",    TYPE_STRING, OFF_STR(web_password)    },
     { "onvif_enable",    TYPE_U8,     OFF_U8(onvif_enable)     },
+    { "onvif_events",    TYPE_U8,     OFF_U8(onvif_events)     },
     { "cam_brightness",  TYPE_I8,     OFF_I8(cam_brightness)   },
     { "cam_contrast",    TYPE_I8,     OFF_I8(cam_contrast)     },
     { "cam_saturation",  TYPE_I8,     OFF_I8(cam_saturation)   },
@@ -556,6 +560,7 @@ bool        config_get_ai_qr_enable(void)   { return s_config.ai_qr_enable; }
 const char *config_get_rtsp_user(void)      { return s_config.rtsp_user; }
 const char *config_get_rtsp_pass(void)      { return s_config.rtsp_pass; }
 bool        config_get_onvif_enable(void)   { return s_config.onvif_enable; }
+bool        config_get_onvif_events(void)   { return s_config.onvif_events; }
 
 int8_t config_get_cam_brightness(void) { return s_config.cam_brightness; }
 int8_t config_get_cam_contrast(void)   { return s_config.cam_contrast; }

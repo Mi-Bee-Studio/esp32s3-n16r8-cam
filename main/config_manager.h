@@ -95,6 +95,7 @@ const char *config_get_rtsp_user(void);
 const char *config_get_rtsp_pass(void);
 const char *config_get_web_password(void);
 bool        config_get_onvif_enable(void);
+bool        config_get_onvif_events(void);   /* 契约 v1.5：MotionAlarm 生成开关 */
 
 int8_t     config_get_cam_brightness(void);
 int8_t     config_get_cam_contrast(void);

@@ -223,7 +223,15 @@ static void sta_apply_and_connect(bool secondary)
     sta_config.sta.listen_interval    = 3;
 
     strlcpy(s_current_ssid, ssid, sizeof(s_current_ssid));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_config));
+    /* 2026-09-06（PIT-034 试点）：ESPectre CSI 策略应用会异步重连 STA，
+     * 断连事件驱动的重连可能与该窗口竞态，set_config 返回状态错误——
+     * ESP_ERROR_CHECK 会直接 abort 重启（实测 line 226 一次），改温和处理。 */
+    esp_err_t cfg_err = esp_wifi_set_config(WIFI_IF_STA, &sta_config);
+    if (cfg_err != ESP_OK) {
+        ESP_LOGW(TAG, "esp_wifi_set_config %s (radio reconfig in flight?) — retry next event",
+                 esp_err_to_name(cfg_err));
+        return;
+    }
     esp_wifi_connect();
     ESP_LOGI(TAG, "STA connecting to [%s]: %s",
              secondary ? "secondary" : "primary", ssid);

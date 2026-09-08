@@ -553,3 +553,28 @@ EARLY→esp_rom_printf 通道，不进 esp_log 族——wrap esp_log 挂空）�
 **sdkconfig 纪律提醒**：本仓生成 sdkconfig 现含 PSRAM 80M/WiFi-LWIP/本地密码
 注入（gitignored）。rm sdkconfig 重配会丢密码注入——defaults 改动后应手改生成
 文件或重配后回填 `CONFIG_MIBEE_CAM_DEFAULT_WEB_PASSWORD`。
+## 2026-09-06：ESPectre CSI 运动感知（家族推广，本板=完美可用 ✅）
+
+`components/espectre/`（GPL-3.0-only，与仓 LICENSE 一致）+ `main/csi_motion.*`
+（第 3a 步，wifi_manager_init 后），`CONFIG_MIBEE_CSI_MOTION` 门控默认 n
+（`select ESP_WIFI_CSI_ENABLED`；门关=零回归）。开门 +93.6KB（5MB 槽无压力）。
+本板特有：csi_motion 任务**核 0**/8KB 栈（核 1 被 broadcaster+AI 占满曾致感知
+静默停摆）；`wifi_manager.c` 的 `esp_wifi_set_config` 已改温和错误处理
+（ESPectre 策略异步重连竞态曾触发 ESP_ERROR_CHECK abort 重启，实测复现一次）。
+实测（ch2，真实 SSID 脱敏）：校准 OK(thr=0.32)、5min+ 连续心跳零重启、
+4.99fps/206KB/s 并存零断连、2 次 MOTION。详见 PITFALLS PIT-034。
+
+## 2026-09-08：ONVIF Pull-Point 事件服务（契约 v1.5，NVR 运动报警联动）
+
+`main/onvif_events.c/h`（与 seeed 同源，仅 config/IP 取值两函数板级适配）：
+CSI 运动 → `MotionAlarm` 通知，NVR `CreatePullPointSubscription` →
+`PullMessages` 轮询。单订阅、1h 终止、120s 无拉取过期、无长轮询；事件生成由
+config 键 `onvif_events`（默认 0）门控。**本板 GetCapabilities 此前就广告了
+`/onvif/events_service` XAddr 但无实现**（NVR 一订阅就 fault）——本次做实。
+CSI 扇出点在 `csi_motion.cpp` 的 `on_motion_state_changed`（本板此前该回调
+仅打日志）。
+
+- **坑（已修）**：`max_uri_handlers = NUM_URIS + 2` 的富余恰好被 2 个 ONVIF
+  URI 吃满，第三个 ONVIF URI 注册即 `ESP_ERR_HTTPD_HANDLERS_FULL`——已改
+  `NUM_URIS + 4`。加端点前先核。
+- 探针 `tools/onvif_events_probe.py`；SPA 开关"ONVIF 运动报警（NVR 联动）"。
