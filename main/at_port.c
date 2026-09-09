@@ -29,6 +29,7 @@
 
 #include "at_port.h"
 #include "config_manager.h"
+#include "csi_motion.h"   /* 契约 v1.7：CSI 调参键族热应用 + AT+CSI 快照 */
 #include "camera_driver.h"
 #include "wifi_manager.h"
 #include "ai_pipeline.h"
@@ -368,6 +369,13 @@ static void cfg_get_ap_fallback(char *buf, size_t len) { snprintf(buf, len, "%u"
 static void cfg_get_ai_face(char *buf, size_t len)     { snprintf(buf, len, "%u", config_get_ai_face_enable() ? 1u : 0u); }
 static void cfg_get_ai_motion(char *buf, size_t len)   { snprintf(buf, len, "%u", config_get_ai_motion_enable() ? 1u : 0u); }
 static void cfg_get_ai_qr(char *buf, size_t len)       { snprintf(buf, len, "%u", config_get_ai_qr_enable() ? 1u : 0u); }
+/* CSI 调参键族（契约 v1.7；threshold 字符串 %.3f——AT_CFG 无浮点类型） */
+static void cfg_get_csi_en(char *buf, size_t len)      { snprintf(buf, len, "%u", config_get_csi_enabled() ? 1u : 0u); }
+static void cfg_get_csi_threshold(char *buf, size_t len) { snprintf(buf, len, "%.3f", (double)config_get_csi_threshold()); }
+static void cfg_get_csi_on_hits(char *buf, size_t len) { snprintf(buf, len, "%u", (unsigned)config_get_csi_on_hits()); }
+static void cfg_get_csi_off_hits(char *buf, size_t len){ snprintf(buf, len, "%u", (unsigned)config_get_csi_off_hits()); }
+static void cfg_get_csi_profile(char *buf, size_t len) { snprintf(buf, len, "%u", (unsigned)config_get_csi_profile()); }
+static void cfg_get_csi_heal(char *buf, size_t len)    { snprintf(buf, len, "%u", config_get_csi_auto_heal() ? 1u : 0u); }
 
 /* 写侧通用：严格解析 + 域校验 → config_set + config_save（落盘） */
 
@@ -512,6 +520,46 @@ static esp_err_t cfg_set_xclk(const char *v)
     /* 下次 camera init/reinit 生效（同 POST /api/config 语义） */
     return cfg_write("xclk_freq_mhz", buf);
 }
+/* CSI 写路径：u8 键 cfg_write（百分刻度换算在 threshold setter）→ 热应用 */
+static esp_err_t csi_write_and_apply(const char *key, const char *val)
+{
+    esp_err_t ret = cfg_write(key, val);
+    if (ret == ESP_OK) csi_motion_apply_config();
+    return ret;
+}
+static esp_err_t cfg_set_csi_en(const char *v)
+{
+    return (v[0]=='0'||v[0]=='1') && v[1]=='\0' ? csi_write_and_apply("csi_enabled", v) : ESP_ERR_INVALID_ARG;
+}
+static esp_err_t cfg_set_csi_threshold(const char *v)
+{
+    char *end = NULL;
+    float t = strtof(v, &end);
+    if (end == v || *end != '\0') return ESP_ERR_INVALID_ARG;
+    if (t != 0.0f && (t < 0.05f || t > 1.0f)) return ESP_ERR_INVALID_ARG;
+    char pct[8];
+    snprintf(pct, sizeof(pct), "%d", (int)(t * 100.0f + 0.5f));
+    const float prev = config_get_csi_threshold();
+    esp_err_t ret = csi_write_and_apply("csi_threshold", pct);
+    if (ret == ESP_OK && t == 0.0f && prev > 0.0f) csi_motion_set_threshold(0.0f);
+    return ret;
+}
+static esp_err_t cfg_set_csi_hits(const char *key, const char *v)
+{
+    int n = atoi(v);
+    if (n < 1 || n > 20) return ESP_ERR_INVALID_ARG;
+    return csi_write_and_apply(key, v);
+}
+static esp_err_t cfg_set_csi_on_hits(const char *v)  { return cfg_set_csi_hits("csi_on_hits", v); }
+static esp_err_t cfg_set_csi_off_hits(const char *v) { return cfg_set_csi_hits("csi_off_hits", v); }
+static esp_err_t cfg_set_csi_profile(const char *v)
+{
+    return (v[0]=='0'||v[0]=='1') && v[1]=='\0' ? csi_write_and_apply("csi_profile", v) : ESP_ERR_INVALID_ARG;
+}
+static esp_err_t cfg_set_csi_heal(const char *v)
+{
+    return (v[0]=='0'||v[0]=='1') && v[1]=='\0' ? csi_write_and_apply("csi_auto_heal", v) : ESP_ERR_INVALID_ARG;
+}
 static esp_err_t cfg_set_onvif(const char *v)
 {
     return cfg_set_u8_bool_field("onvif_enable", v);   /* 重启生效（同 web） */
@@ -581,6 +629,13 @@ static const at_cfg_field_t s_cfg_fields[] = {
     { "cam_sharpness",    AT_CFG_I8,  false, cfg_get_cam_sharpness,  cfg_set_cam_sharpness },
     { "xclk_freq_mhz",    AT_CFG_U8,  false, cfg_get_xclk,          cfg_set_xclk },
     { "onvif_enable",     AT_CFG_U8,  false, cfg_get_onvif,         cfg_set_onvif },
+    /* CSI 调参键族（契约 v1.7） */
+    { "csi_enabled",     AT_CFG_U8,  false, cfg_get_csi_en,        cfg_set_csi_en },
+    { "csi_threshold",   AT_CFG_STR, false, cfg_get_csi_threshold, cfg_set_csi_threshold },
+    { "csi_on_hits",     AT_CFG_U8,  false, cfg_get_csi_on_hits,   cfg_set_csi_on_hits },
+    { "csi_off_hits",    AT_CFG_U8,  false, cfg_get_csi_off_hits,  cfg_set_csi_off_hits },
+    { "csi_profile",     AT_CFG_U8,  false, cfg_get_csi_profile,   cfg_set_csi_profile },
+    { "csi_auto_heal",   AT_CFG_U8,  false, cfg_get_csi_heal,      cfg_set_csi_heal },
     { "allow_ap_fallback", AT_CFG_U8, false, cfg_get_ap_fallback,   cfg_set_ap_fallback },
     { "ai_face_en",       AT_CFG_U8,  false, cfg_get_ai_face,       cfg_set_ai_face },
     { "ai_motion_en",     AT_CFG_U8,  false, cfg_get_ai_motion,     cfg_set_ai_motion },
@@ -798,7 +853,46 @@ static esp_err_t ext_camcap(const char *cmd)
     return ESP_OK;
 }
 
+/* AT+CSI?（实时快照）/ AT+CSICAL（重校准）——契约 v1.3 */
+static esp_err_t ext_csi(const char *cmd)
+{
+    if (strncasecmp(cmd, "CSI?", 4) != 0) return ESP_ERR_NOT_SUPPORTED;
+    csi_motion_status_t st;
+    char line[128];
+    if (!csi_motion_get_status(&st)) {
+        at_port_write("+ERROR: CSI sensing not active (warming or not built)\r\n");
+        return ESP_OK;
+    }
+    snprintf(line, sizeof(line),
+             "+CSI: state=%s score=%.3f thr=%.3f profile=%u locked=%d calibrating=%d\r\n",
+             st.state, (double)st.score, (double)st.thr,
+             (unsigned)st.profile, st.thr_locked, st.calibrating);
+    at_port_write(line);
+    snprintf(line, sizeof(line),
+             "+CSI: flip_rate=%u/h tx=%.1f cb=%.1f adm=%.1f pps\r\n",
+             (unsigned)st.flip_rate, (double)st.tx_pps, (double)st.cb_pps,
+             (double)st.adm_pps);
+    at_port_write(line);
+    at_port_write("OK\r\n");
+    return ESP_OK;
+}
+static esp_err_t ext_csical(const char *cmd)
+{
+    if (strncasecmp(cmd, "CSICAL", 6) != 0) return ESP_ERR_NOT_SUPPORTED;
+    esp_err_t ret = csi_motion_recalibrate();
+    if (ret != ESP_OK) {
+        at_port_write(ret == ESP_ERR_NOT_SUPPORTED
+                          ? "+ERROR: CSI sensing not built\r\n"
+                          : "+ERROR: CSI runtime not ready\r\n");
+    } else {
+        at_port_write("+CSICAL: recalibration started\r\nOK\r\n");
+    }
+    return ESP_OK;
+}
+
 static const at_ext_cmd_t s_ext_cmds[] = {
+    { "CSI",    "CSI? (live sensing snapshot)",     ext_csi    },
+    { "CSICAL", "CSICAL (trigger recalibration)",   ext_csical },
     { "AIFACE",   "AIFACE? | AIFACE=on/off",          ext_aiface   },
     { "AIMOTION", "AIMOTION? | AIMOTION=on/off",      ext_aimotion },
     { "AIQR",     "AIQR? | AIQR=on/off",              ext_aiqr     },

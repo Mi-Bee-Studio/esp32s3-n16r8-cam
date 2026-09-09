@@ -96,6 +96,13 @@ const char *config_get_rtsp_pass(void);
 const char *config_get_web_password(void);
 bool        config_get_onvif_enable(void);
 bool        config_get_onvif_events(void);   /* 契约 v1.5：MotionAlarm 生成开关 */
+/* CSI 调参键族（契约 v1.7；threshold 换算 float 0=auto 或 0.05-1.0） */
+bool        config_get_csi_enabled(void);
+float       config_get_csi_threshold(void);
+uint8_t     config_get_csi_on_hits(void);
+uint8_t     config_get_csi_off_hits(void);
+uint8_t     config_get_csi_profile(void);
+bool        config_get_csi_auto_heal(void);
 
 int8_t     config_get_cam_brightness(void);
 int8_t     config_get_cam_contrast(void);
