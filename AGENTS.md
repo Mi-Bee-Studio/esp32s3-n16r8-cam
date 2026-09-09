@@ -578,3 +578,11 @@ CSI 扇出点在 `csi_motion.cpp` 的 `on_motion_state_changed`（本板此前�
   URI 吃满，第三个 ONVIF URI 注册即 `ESP_ERR_HTTPD_HANDLERS_FULL`——已改
   `NUM_URIS + 4`。加端点前先核。
 - 探针 `tools/onvif_events_probe.py`；SPA 开关"ONVIF 运动报警（NVR 联动）"。
+
+## 2026-09-08：CSI 状态 HTTP 回退（契约 v1.6，SPA 胶囊对齐 seeed）
+
+本板 CSI 常开但**无 WS 服务**（`websocket:false`）——SPA 的 CSI 胶囊/统计片
+此前只认 `/ws csi_status` 心跳，在本板 UI 全静默。v1.6 起 `GET /api/status`
+带可选 `csi` 对象（与心跳同形同值），SPA 的 1Hz 轮询消费它驱动胶囊。
+快照源 `csi_motion_get_status()`（`csi_motion.cpp` 内 portMUX 单写者快照，
+`on_periodic_update` ~1Hz 写、httpd worker 读，读侧不阻塞感知回调）。
