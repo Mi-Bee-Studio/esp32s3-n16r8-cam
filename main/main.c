@@ -29,6 +29,7 @@
 #include "camera_driver.h"
 #include "config_manager.h"
 #include "wifi_manager.h"
+#include "time_sync.h"
 #include "csi_motion.h"
 #include "web_server.h"
 #include "mjpeg_streamer.h"
@@ -138,9 +139,9 @@ void app_main(void)
     }
     config_load();
 
-    /* 时区（契约 §3.1）：非空即在启动时应用——本板无 NTP，时区供
-     * /api/time 手动设时后的 localtime() 换算使用（POST /api/config
-     * 改 timezone 时立即重设，同 seeed/ai-thinker） */
+    /* 时区（契约 §3.1）：非空即在启动时应用——SNTP（issue #7）与
+     * /api/time 手动设时共用此 TZ（POST /api/config 改 timezone 时
+     * 立即重设，同 seeed/ai-thinker；time_sync_init 内亦会重放） */
     {
         const char *tz = config_get_timezone();
         if (tz && tz[0]) {
@@ -165,6 +166,13 @@ void app_main(void)
 
     /* ---- 3a. ESPectre CSI motion sensing (optional, after WiFi) ------- */
     csi_motion_init();
+
+    /* ---- 3b. SNTP time sync (issue #7：ONVIF 事件时戳 1970 纪元修复) -- */
+    /* WiFi 已连（重启到已保存网络时会很快）即同步；未连由主循环每 60s
+     * 重试。ONVIF 事件契约 §13 容忍未同步（照发，时戳为纪元）。 */
+    if (wifi_manager_is_connected()) {
+        time_sync_init();
+    }
 
     /* ---- 4. Camera init + flash LED probe ------------------------- */
     {
@@ -281,6 +289,12 @@ void app_main(void)
 
     /* Idle loop */
     while (1) {
+        /* SNTP 重试（issue #7）：开机未连网时 3b 跳过，这里每 60s 补；
+         * 已同步后 time_sync_init 幂等直接返回。 */
+        if (wifi_manager_is_connected() && !time_is_synced()) {
+            time_sync_init();
+        }
+
         /* httpd :80 self-heal: probe every 60s cycle.
          * 2 consecutive failures (120s unresponsive) → reboot.
          * WiFi 未连接时不计数（ai-thinker 2026-09-03 同款：掉线≠httpd 死）。 */
