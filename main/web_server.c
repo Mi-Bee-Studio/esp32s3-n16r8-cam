@@ -38,6 +38,7 @@
 #include "esp_wifi.h"
 #include "ota_updater.h"
 #include "esp_spiffs.h"  /* for stat on SPIFFS files */
+#include "csi_motion.h"  /* 契约 v1.6：/api/status 的 csi 快照字段（编译关闭时恒缺省） */
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -373,6 +374,19 @@ static esp_err_t api_status_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(data, "stream_clients_max", 2);
     cJSON_AddNumberToObject(data, "uptime",
         (double)(esp_timer_get_time() / 1000000));
+
+    /* CSI 实时快照（契约 v1.6，与 /ws csi_status 心跳同形同值；本板无 WS
+     * 服务，SPA 胶囊/统计片由此字段驱动。CSI 编译关闭时恒缺省） */
+    csi_motion_status_t csi;
+    if (csi_motion_get_status(&csi)) {
+        cJSON *csi_obj = cJSON_CreateObject();
+        if (csi_obj) {
+            cJSON_AddStringToObject(csi_obj, "state", csi.state);
+            cJSON_AddNumberToObject(csi_obj, "score", (double)csi.score);
+            cJSON_AddNumberToObject(csi_obj, "thr", (double)csi.thr);
+            cJSON_AddItemToObject(data, "csi", csi_obj);
+        }
+    }
 
     return json_ok(req, data);
 }
@@ -808,7 +822,7 @@ static esp_err_t api_capabilities_handler(httpd_req_t *req)
     }
     
     /* 契约 v1.0：12 个布尔能力位 + api_version/wifi_scan（见 docs/api-contract.md） */
-    cJSON_AddStringToObject(data, "api_version", "1.5");
+    cJSON_AddStringToObject(data, "api_version", "1.6");
     cJSON_AddBoolToObject(data, "wifi_scan", true);
     cJSON_AddBoolToObject(data, "ai",        true);   /* Has AI pipeline */
     cJSON_AddBoolToObject(data, "sd",        false);  /* No SD card */

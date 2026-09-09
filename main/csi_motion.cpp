@@ -25,6 +25,7 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -56,6 +57,13 @@ namespace {
 
 espectre::RuntimeFrontendController s_controller;
 
+/* 契约 v1.6：最新快照（on_periodic_update 单写者 ~1Hz；/api/status 读者经
+ * portMUX 拷贝，临界区仅 3 字段，读侧永不阻塞感知回调）。本板无 WS 服务，
+ * 这是 CSI 状态对外的唯一实时通道（SPA 胶囊/统计片由此驱动）。 */
+static portMUX_TYPE s_snap_mux = portMUX_INITIALIZER_UNLOCKED;
+static bool s_snap_valid = false;
+static csi_motion_status_t s_snap;
+
 /* Pilot listener: log-only. Keep callbacks bounded and non-blocking
  * (SDK threading contract) — real actions (webhook/event_bus) come later. */
 class CamCsiListener : public espectre::IRuntimeListener {
@@ -83,14 +91,22 @@ public:
 
     void on_periodic_update(const espectre::RuntimeSnapshot &s,
                             uint32_t packets_received) override {
+        /* 契约 v1.6：先落快照（/api/status "csi" 字段的数据源），再记日志。 */
+        const char *st = s.ready_to_publish
+                             ? (s.motion_state == espectre::MotionState::MOTION ? "MOTION" : "IDLE")
+                             : "warming";
+        portENTER_CRITICAL(&s_snap_mux);
+        s_snap_valid = true;
+        strlcpy(s_snap.state, st, sizeof(s_snap.state));
+        s_snap.score = s.movement_metric;
+        s_snap.thr = s.threshold;
+        portEXIT_CRITICAL(&s_snap_mux);
         const espectre::RuntimeDiagnosticsSample *d = s_controller.diagnostics_sample();
         if (d != nullptr) {
             ESP_LOGI(TAG,
                      "status: state=%s score=%.2f pkts=%u cal=%u/%u prof=%d | "
                      "diag tx=%.1f cb=%.1f cls=%.1f rej=%.1f acc=%.1f adm=%.1f filt=%.1f",
-                     s.ready_to_publish
-                         ? (s.motion_state == espectre::MotionState::MOTION ? "MOTION" : "IDLE")
-                         : "warming",
+                     st,
                      s.movement_metric, (unsigned)packets_received,
                      (unsigned)s.calibration_packets,
                      (unsigned)s.calibration_target_packets,
@@ -100,9 +116,7 @@ public:
                      d->csi_admitted_pps, d->csi_filtered_pps);
         } else {
             ESP_LOGI(TAG, "status: state=%s pkts=%u (no diag)",
-                     s.ready_to_publish
-                         ? (s.motion_state == espectre::MotionState::MOTION ? "MOTION" : "IDLE")
-                         : "warming",
+                     st,
                      (unsigned)packets_received);
         }
     }
@@ -142,6 +156,16 @@ void csi_motion_task(void *unused)
 
 } /* namespace */
 
+bool csi_motion_get_status(csi_motion_status_t *out)
+{
+    if (!out) return false;
+    portENTER_CRITICAL(&s_snap_mux);
+    const bool valid = s_snap_valid;
+    if (valid) *out = s_snap;
+    portEXIT_CRITICAL(&s_snap_mux);
+    return valid;
+}
+
 esp_err_t csi_motion_init(void)
 {
     /* n16r8 note: core 1 hosts broadcaster+AI at prio 5 plus the streamers;
@@ -159,6 +183,12 @@ esp_err_t csi_motion_init(void)
 esp_err_t csi_motion_init(void)
 {
     return ESP_OK;
+}
+
+bool csi_motion_get_status(csi_motion_status_t *out)
+{
+    (void)out;
+    return false;
 }
 
 #endif /* CONFIG_MIBEE_CSI_MOTION */
