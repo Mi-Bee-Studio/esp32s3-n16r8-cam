@@ -31,6 +31,7 @@
 #include "wifi_manager.h"
 #include "time_sync.h"
 #include "csi_motion.h"
+#include "wifi_channel_health.h"
 #include "web_server.h"
 #include "mjpeg_streamer.h"
 #include "rtsp_server.h"
@@ -166,6 +167,7 @@ void app_main(void)
 
     /* ---- 3a. ESPectre CSI motion sensing (optional, after WiFi) ------- */
     csi_motion_init();
+    wifi_channel_health_init();   /* 契约 v1.7 ①b：信道健康感知（CSI 无关，四仓共享） */
 
     /* ---- 3b. SNTP time sync (issue #7：ONVIF 事件时戳 1970 纪元修复) -- */
     /* WiFi 已连（重启到已保存网络时会很快）即同步；未连由主循环每 60s

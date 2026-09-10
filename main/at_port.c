@@ -30,6 +30,7 @@
 #include "at_port.h"
 #include "config_manager.h"
 #include "csi_motion.h"   /* 契约 v1.7：CSI 调参键族热应用 + AT+CSI 快照 */
+#include "wifi_channel_health.h"   /* 契约 v1.7 ①b：信道健康快照 */
 #include "camera_driver.h"
 #include "wifi_manager.h"
 #include "ai_pipeline.h"
@@ -853,6 +854,40 @@ static esp_err_t ext_camcap(const char *cmd)
     return ESP_OK;
 }
 
+/* AT+CHHEALTH?（信道健康快照）/ =SCAN（手动拥塞 scan）——契约 v1.3 ①b */
+static esp_err_t ext_chhealth(const char *cmd)
+{
+    char line[144];
+    if (strncasecmp(cmd, "CHHEALTH?", 10) == 0) {
+        wifi_chan_health_t ch;
+        if (!wifi_channel_health_get(&ch)) {
+            at_port_write("+ERROR: chan health not sampled yet\r\n");
+            return ESP_OK;
+        }
+        snprintf(line, sizeof(line),
+                 "+CHHEALTH: rssi %d/%d dBm ch=%u disc_1h=%u busy=%u%% bss=%u/%u\r\n",
+                 (int)ch.rssi_avg, (int)ch.rssi_min, (unsigned)ch.channel,
+                 (unsigned)ch.disconnects_1h, (unsigned)ch.busy_score,
+                 (unsigned)ch.bss_on_chan, (unsigned)ch.bss_total);
+        at_port_write(line);
+        snprintf(line, sizeof(line), "+CHHEALTH: csi_adm=%.1f pps cb_ratio=%.1f scan_ts=%u\r\n",
+                 (double)ch.csi_adm_pps, (double)ch.csi_cb_ratio, (unsigned)ch.scan_ts);
+        at_port_write(line);
+        at_port_write("OK\r\n");
+        return ESP_OK;
+    }
+    if (strncasecmp(cmd, "CHHEALTH=SCAN", 13) == 0) {
+        esp_err_t ret = wifi_channel_health_scan_now();
+        if (ret != ESP_OK) {
+            at_port_write("+ERROR: busy (stream clients watching)\r\n");
+        } else {
+            at_port_write("+CHHEALTH: scan queued (see CHHEALTH? in ~15s)\r\nOK\r\n");
+        }
+        return ESP_OK;
+    }
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
 /* AT+CSI?（实时快照）/ AT+CSICAL（重校准）——契约 v1.3 */
 static esp_err_t ext_csi(const char *cmd)
 {
@@ -893,6 +928,7 @@ static esp_err_t ext_csical(const char *cmd)
 static const at_ext_cmd_t s_ext_cmds[] = {
     { "CSI",    "CSI? (live sensing snapshot)",     ext_csi    },
     { "CSICAL", "CSICAL (trigger recalibration)",   ext_csical },
+    { "CHHEALTH", "CHHEALTH? | CHHEALTH=SCAN (channel health)", ext_chhealth },
     { "AIFACE",   "AIFACE? | AIFACE=on/off",          ext_aiface   },
     { "AIMOTION", "AIMOTION? | AIMOTION=on/off",      ext_aimotion },
     { "AIQR",     "AIQR? | AIQR=on/off",              ext_aiqr     },

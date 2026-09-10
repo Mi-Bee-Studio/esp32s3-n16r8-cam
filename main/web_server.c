@@ -39,6 +39,7 @@
 #include "ota_updater.h"
 #include "esp_spiffs.h"  /* for stat on SPIFFS files */
 #include "csi_motion.h"  /* 契约 v1.6：/api/status 的 csi 快照字段（编译关闭时恒缺省） */
+#include "wifi_channel_health.h"  /* 契约 v1.7 ①b：信道健康快照 */
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -393,6 +394,24 @@ static esp_err_t api_status_handler(httpd_req_t *req)
             cJSON_AddNumberToObject(csi_obj, "cb_pps", (double)csi.cb_pps);
             cJSON_AddNumberToObject(csi_obj, "adm_pps", (double)csi.adm_pps);
             cJSON_AddItemToObject(data, "csi", csi_obj);
+        }
+    }
+    /* 契约 v1.7 ①b：Wi-Fi 信道健康快照（CSI 无关，全家族字段一致） */
+    wifi_chan_health_t ch;
+    if (wifi_channel_health_get(&ch)) {
+        cJSON *ch_obj = cJSON_CreateObject();
+        if (ch_obj) {
+            cJSON_AddNumberToObject(ch_obj, "rssi_avg", (double)ch.rssi_avg);
+            cJSON_AddNumberToObject(ch_obj, "rssi_min", (double)ch.rssi_min);
+            cJSON_AddNumberToObject(ch_obj, "channel", (double)ch.channel);
+            cJSON_AddNumberToObject(ch_obj, "disconnects_1h", (double)ch.disconnects_1h);
+            cJSON_AddNumberToObject(ch_obj, "scan_ts", (double)ch.scan_ts);
+            cJSON_AddNumberToObject(ch_obj, "bss_on_chan", (double)ch.bss_on_chan);
+            cJSON_AddNumberToObject(ch_obj, "bss_total", (double)ch.bss_total);
+            cJSON_AddNumberToObject(ch_obj, "busy_score", (double)ch.busy_score);
+            cJSON_AddNumberToObject(ch_obj, "csi_adm_pps", (double)ch.csi_adm_pps);
+            cJSON_AddNumberToObject(ch_obj, "csi_cb_ratio", (double)ch.csi_cb_ratio);
+            cJSON_AddItemToObject(data, "chan_health", ch_obj);
         }
     }
 
