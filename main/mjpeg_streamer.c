@@ -28,6 +28,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <lwip/sockets.h>
+#include <lwip/inet.h>
 #include <lwip/netdb.h>
 #include <errno.h>
 #include <netinet/tcp.h>
@@ -283,6 +284,67 @@ static void mjpeg_listen_task(void *arg)
         struct timeval snd_to = { .tv_sec = 10, .tv_usec = 0 };
         setsockopt(client_sock, SOL_SOCKET, SO_SNDTIMEO, &snd_to, sizeof(snd_to));
 
+        /* 防锤击护栏（PIT-038 多 peer v2，自 ai/luatos 移植 2026-09-11，issue #11）：
+         * 同 IP 两次接入间隔 <5s（NVR 类查看端 1-2s 重连风暴签名）→ 503 +
+         * 指数退避（10s 起步翻倍、封顶 5 分钟）。churn 不挡在门口的话，
+         * 设备侧先关的短命连接会把 TIME_WAIT 堆满 socket 表 → 全栈 ENOMEM
+         * （espectre ping errno=12 / pthread 创建失败 / httpd 哑）。4 项每 IP
+         * 独立退避表（环替换），拒绝静默计数防日志风暴。 */
+        {
+            enum { HAMMER_SLOTS = 4, HAMMER_MIN_GAP_MS = 5000 };
+            static struct {
+                struct in_addr peer;
+                TickType_t last_accept;   /* 上次放行时刻 */
+                TickType_t until;         /* 退避截止 */
+                uint32_t backoff_ms;
+                uint32_t rejected;
+            } s_hammer[HAMMER_SLOTS];
+            static int s_hammer_next;
+            TickType_t now = xTaskGetTickCount();
+            int h = -1;
+            for (int i = 0; i < HAMMER_SLOTS; i++) {
+                if (s_hammer[i].peer.s_addr == client_addr.sin_addr.s_addr) {
+                    h = i;
+                    break;
+                }
+            }
+            if (h >= 0 && ((int32_t)(now - s_hammer[h].until) < 0 ||
+                           (int32_t)(now - s_hammer[h].last_accept) <
+                               pdMS_TO_TICKS(HAMMER_MIN_GAP_MS))) {
+                s_hammer[h].until = now + pdMS_TO_TICKS(s_hammer[h].backoff_ms);
+                s_hammer[h].backoff_ms = s_hammer[h].backoff_ms < 300000
+                                             ? s_hammer[h].backoff_ms * 2 : 300000;
+                if (++s_hammer[h].rejected % 50 == 1) {
+                    char ipstr[INET_ADDRSTRLEN];
+                    inet_ntop(AF_INET, &client_addr.sin_addr, ipstr, sizeof(ipstr));
+                    ESP_LOGI(TAG, "Hammer guard: rejected %u from %s (backoff %us)",
+                             (unsigned)s_hammer[h].rejected, ipstr,
+                             s_hammer[h].backoff_ms / 1000);
+                }
+                const char *busy =
+                    "HTTP/1.1 503 Service Unavailable\r\n"
+                    "Content-Length: 23\r\n\r\nRetry after cooldown\r\n";
+                send(client_sock, busy, strlen(busy), 0);
+                close(client_sock);
+                continue;
+            }
+            if (h < 0) {
+                h = s_hammer_next;
+                s_hammer_next = (s_hammer_next + 1) % HAMMER_SLOTS;
+                s_hammer[h].rejected = 0;
+                s_hammer[h].until = 0;
+            }
+            s_hammer[h].peer = client_addr.sin_addr;
+            s_hammer[h].last_accept = now;
+            s_hammer[h].backoff_ms = 10000;
+        }
+
+        {
+            char ipstr[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &client_addr.sin_addr, ipstr, sizeof(ipstr));
+            ESP_LOGI(TAG, "Stream accept from %s", ipstr);
+        }
+
         /* 满员时踢最旧连接（LRU）：shutdown 唤醒其阻塞 send/recv → 自行清理释放槽位 */
         bool slot_ready = false;
         xSemaphoreTake(s_mutex, portMAX_DELAY);
@@ -324,6 +386,8 @@ static void mjpeg_listen_task(void *arg)
             continue;
         }
 
+        /* 计数自增必须在锁内（原实现锁外自增+悬空 give，2026-09-11 issue #11 清理） */
+        xSemaphoreTake(s_mutex, portMAX_DELAY);
         s_client_count++;
         xSemaphoreGive(s_mutex);
 
@@ -347,6 +411,9 @@ static void mjpeg_listen_task(void *arg)
     }
 
     ESP_LOGI(TAG, "Listen task exiting");
+    /* 自清全局句柄：stop()/OTA quiesce 轮询此标志判断任务已退，避免对已死
+     * 任务 vTaskDelete 悬垂句柄（PIT-037，自 ai 同步 2026-09-11） */
+    s_listen_task = NULL;
     vTaskDelete(NULL);
 }
 /* ------------------------------------------------------------------ */

@@ -40,6 +40,8 @@
 #include "onvif_discovery.h"
 #include "at_command.h"
 #include "ota_updater.h"
+#include "flash_led.h"
+#include "status_led.h"
 #include "lwip/sockets.h"
 #include "lwip/inet.h"
 
@@ -176,7 +178,7 @@ void app_main(void)
         time_sync_init();
     }
 
-    /* ---- 4. Camera init + flash LED probe ------------------------- */
+    /* ---- 4. Camera init + LED 子系统初始化 ------------------------- */
     {
         esp_err_t cam_err = camera_init();
         if (cam_err == ESP_OK) {
@@ -187,21 +189,23 @@ void app_main(void)
                          fb->width, fb->height, (unsigned)fb->len);
                 esp_camera_fb_return(fb);
             }
-
-            /* ---- Probe flash LED on GPIO 2, 3, 46 ------------------ */
-            const int flash_candidates[] = {2, 3, 46};
-            for (int i = 0; i < 3; i++) {
-                int gpio = flash_candidates[i];
-                gpio_set_direction(gpio, GPIO_MODE_OUTPUT);
-                gpio_set_level(gpio, 1);
-                ESP_LOGI(TAG, "Flash probe: GPIO %d = HIGH, waiting 2s...", gpio);
-                vTaskDelay(pdMS_TO_TICKS(2000));
-                gpio_set_level(gpio, 0);
-                ESP_LOGI(TAG, "Flash probe: GPIO %d = LOW", gpio);
-            }
-            ESP_LOGW(TAG, "Flash LED probe complete \u2014 visually check which GPIO lit the LED");
         } else {
-            ESP_LOGE(TAG, "Camera init failed, skipping frame capture + flash probe");
+            ESP_LOGE(TAG, "Camera init failed, skipping frame capture");
+        }
+
+        /* 2026-09-11（issue #11 §四）：flash_led/status_led 自基线起就没有
+         * init 调用——AT+LED / POST /api/led 恒 INVALID_STATE、状态灯从未
+         * 点亮。此处补上初始化。引脚说明：flash LED 取 GPIO2（社区板型资料
+         * 主流说法，也是原开机探测候选之一；不同批次板 LED 位置不同，点亮
+         * 与否以实板为准，运行时配置键方案见 issue 待办）；status LED 维持
+         * 模块内默认（WS2812@48，devkit 系参考设计）。原 GPIO 2/3/46 探测
+         * 舞蹈移除——每次开机白耗 6s，且裸 gpio_set_level 与 LEDC/RMT 驱动
+         * 冲突。 */
+        if (flash_led_init(GPIO_NUM_2) != ESP_OK) {
+            ESP_LOGW(TAG, "Flash LED init failed — AT+LED/api/led will error");
+        }
+        if (status_led_init() != ESP_OK) {
+            ESP_LOGW(TAG, "Status LED init failed — wifi status colors unavailable");
         }
     }
 
