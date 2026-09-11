@@ -25,6 +25,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_heap_caps.h"
+#if CONFIG_HEAP_TASK_TRACKING
+/* 内部堆地板诊断（issue #11 遗留专项）：生产构建（sdkconfig.defaults）不开
+ * 此选项，仅诊断构建在本地 gitignored sdkconfig 里开启，代码零开销保留。 */
+#include "esp_heap_task_info.h"
+#endif
 #include "driver/gpio.h"
 #include "camera_driver.h"
 #include "config_manager.h"
@@ -120,6 +125,24 @@ static void init_spiffs(void)
 /* ------------------------------------------------------------------ */
 /*  app_main                                                          */
 /* ------------------------------------------------------------------ */
+
+#if CONFIG_HEAP_TASK_TRACKING
+/* 内部堆地板诊断（issue #11 遗留）：打区域总量 + 每任务堆用量全景。
+ * 依赖 CONFIG_HEAP_TRACK_DELETED_TASKS 才能看到已删除任务的遗留分配。 */
+static void heap_diag_dump(int seq)
+{
+    ESP_LOGI(TAG, "=== HEAP DIAG #%d internal=%lu psram=%lu min_free_int=%lu ===",
+             seq,
+             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (unsigned long)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+    heap_caps_print_heap_info(MALLOC_CAP_INTERNAL);
+    heap_caps_print_all_task_stat_overview(NULL);
+    fflush(stdout);
+}
+#else
+static void heap_diag_dump(int seq) { (void)seq; }
+#endif
 
 void app_main(void)
 {
@@ -294,6 +317,7 @@ void app_main(void)
     at_command_init();
 
     /* Idle loop */
+    heap_diag_dump(0);   /* 启动完成即取全景基线（WiFi/httpd/mjpeg 已建） */
     while (1) {
         /* SNTP 重试（issue #7）：开机未连网时 3b 跳过，这里每 60s 补；
          * 已同步后 time_sync_init 幂等直接返回。 */
@@ -320,7 +344,15 @@ void app_main(void)
         } else {
             httpd_stuck_count = 0;
         }
-        
+
+        /* 堆诊断：第 1/2/3 分钟各打一次（覆盖地板形成期），之后每 30 分钟一次 */
+        {
+            static int diag_cycle = 0;
+            if (diag_cycle >= 1 && diag_cycle <= 3) heap_diag_dump(diag_cycle);
+            else if (diag_cycle > 3 && (diag_cycle % 30) == 0) heap_diag_dump(diag_cycle);
+            diag_cycle++;
+        }
+
         vTaskDelay(pdMS_TO_TICKS(60000));
         ESP_LOGD(TAG, "Heartbeat: heap=%lu PSRAM=%lu",
                  (unsigned long)esp_get_free_heap_size(),
