@@ -39,6 +39,7 @@
 #include "ota_updater.h"
 #include "esp_spiffs.h"  /* for stat on SPIFFS files */
 #include "csi_motion.h"  /* 契约 v1.6：/api/status 的 csi 快照字段（编译关闭时恒缺省） */
+#include "wifi_channel_health.h"  /* 契约 v1.7 ①b：信道健康快照 */
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -384,7 +385,33 @@ static esp_err_t api_status_handler(httpd_req_t *req)
             cJSON_AddStringToObject(csi_obj, "state", csi.state);
             cJSON_AddNumberToObject(csi_obj, "score", (double)csi.score);
             cJSON_AddNumberToObject(csi_obj, "thr", (double)csi.thr);
+            /* 契约 v1.7 增补：调参/自愈可观测面 */
+            cJSON_AddNumberToObject(csi_obj, "profile", (double)csi.profile);
+            cJSON_AddBoolToObject(csi_obj, "thr_locked", csi.thr_locked);
+            cJSON_AddBoolToObject(csi_obj, "calibrating", csi.calibrating);
+            cJSON_AddNumberToObject(csi_obj, "flip_rate", (double)csi.flip_rate);
+            cJSON_AddNumberToObject(csi_obj, "tx_pps", (double)csi.tx_pps);
+            cJSON_AddNumberToObject(csi_obj, "cb_pps", (double)csi.cb_pps);
+            cJSON_AddNumberToObject(csi_obj, "adm_pps", (double)csi.adm_pps);
             cJSON_AddItemToObject(data, "csi", csi_obj);
+        }
+    }
+    /* 契约 v1.7 ①b：Wi-Fi 信道健康快照（CSI 无关，全家族字段一致） */
+    wifi_chan_health_t ch;
+    if (wifi_channel_health_get(&ch)) {
+        cJSON *ch_obj = cJSON_CreateObject();
+        if (ch_obj) {
+            cJSON_AddNumberToObject(ch_obj, "rssi_avg", (double)ch.rssi_avg);
+            cJSON_AddNumberToObject(ch_obj, "rssi_min", (double)ch.rssi_min);
+            cJSON_AddNumberToObject(ch_obj, "channel", (double)ch.channel);
+            cJSON_AddNumberToObject(ch_obj, "disconnects_1h", (double)ch.disconnects_1h);
+            cJSON_AddNumberToObject(ch_obj, "scan_ts", (double)ch.scan_ts);
+            cJSON_AddNumberToObject(ch_obj, "bss_on_chan", (double)ch.bss_on_chan);
+            cJSON_AddNumberToObject(ch_obj, "bss_total", (double)ch.bss_total);
+            cJSON_AddNumberToObject(ch_obj, "busy_score", (double)ch.busy_score);
+            cJSON_AddNumberToObject(ch_obj, "csi_adm_pps", (double)ch.csi_adm_pps);
+            cJSON_AddNumberToObject(ch_obj, "csi_cb_ratio", (double)ch.csi_cb_ratio);
+            cJSON_AddItemToObject(data, "chan_health", ch_obj);
         }
     }
 
@@ -437,6 +464,13 @@ static esp_err_t api_config_get_handler(httpd_req_t *req)
     }
     cJSON_AddBoolToObject(data,   "onvif_enable",     config_get_onvif_enable());
     cJSON_AddBoolToObject(data,   "onvif_events",     config_get_onvif_events());   /* 契约 v1.5 */
+    /* CSI 调参键族（契约 v1.7；CSI-off 亦有默认值） */
+    cJSON_AddBoolToObject(data,   "csi_enabled",      config_get_csi_enabled());
+    cJSON_AddNumberToObject(data, "csi_threshold",    (double)config_get_csi_threshold());
+    cJSON_AddNumberToObject(data, "csi_on_hits",      (double)config_get_csi_on_hits());
+    cJSON_AddNumberToObject(data, "csi_off_hits",     (double)config_get_csi_off_hits());
+    cJSON_AddNumberToObject(data, "csi_profile",      (double)config_get_csi_profile());
+    cJSON_AddBoolToObject(data,   "csi_auto_heal",    config_get_csi_auto_heal());
     cJSON_AddNumberToObject(data, "cam_brightness", config_get_cam_brightness());
     cJSON_AddNumberToObject(data, "cam_contrast",   config_get_cam_contrast());
     cJSON_AddNumberToObject(data, "cam_saturation", config_get_cam_saturation());
@@ -489,6 +523,8 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
     int updated = 0;
     bool wifi_changed = false;
     bool tz_changed = false;
+    bool csi_changed = false;
+    const float prev_csi_thr = config_get_csi_threshold();
     const char *known_keys[] = {
         "wifi_ssid", "wifi_pass", "wifi_ssid_2", "wifi_pass_2",
         "web_password", "device_name", "timezone", "allow_ap_fallback",
@@ -497,6 +533,8 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
         "rtsp_user", "rtsp_pass", "onvif_enable", "onvif_events",
         "cam_brightness", "cam_contrast", "cam_saturation", "cam_sharpness",
         "cam_hmirror", "cam_vflip",
+        "csi_enabled", "csi_threshold", "csi_on_hits", "csi_off_hits",
+        "csi_profile", "csi_auto_heal",
         NULL
     };
 
@@ -504,6 +542,7 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
         const char *key = known_keys[i];
         item = cJSON_GetObjectItem(json, key);
         if (!item) continue;
+        if (strncmp(key, "csi_", 4) == 0) csi_changed = true;
         if (strcmp(key, "wifi_ssid") == 0 ||
             strcmp(key, "wifi_pass") == 0 ||
             strcmp(key, "wifi_ssid_2") == 0 ||
@@ -559,6 +598,16 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
             continue;
         }
         int val = item->valueint;
+        /* csi_threshold：JSON float 0-1 → NVS 百分刻度 u8（契约 v1.7） */
+        if (strcmp(key, "csi_threshold") == 0) {
+            double t = item->valuedouble;
+            if (t != 0.0 && (t < 0.05 || t > 1.0)) {
+                cJSON_Delete(json);
+                return json_error(req, "csi_threshold must be 0 (auto) or 0.05-1.0",
+                                  HTTPD_400_BAD_REQUEST);
+            }
+            val = (int)(t * 100.0 + 0.5);
+        }
 
         /* —— 契约 §4 数值域校验（越界 400）—— */
         if (strcmp(key, "cam_quality") == 0) {
@@ -608,6 +657,21 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
                 cJSON_Delete(json);
                 return json_error(req, msg, HTTPD_400_BAD_REQUEST);
             }
+        } else if (strcmp(key, "csi_on_hits") == 0 || strcmp(key, "csi_off_hits") == 0) {
+            if (val < 1 || val > 20) {
+                cJSON_Delete(json);
+                return json_error(req, "csi hits must be 1-20", HTTPD_400_BAD_REQUEST);
+            }
+        } else if (strcmp(key, "csi_profile") == 0) {
+            if (val < 0 || val > 1) {
+                cJSON_Delete(json);
+                return json_error(req, "csi_profile must be 0 or 1", HTTPD_400_BAD_REQUEST);
+            }
+        } else if (strcmp(key, "csi_enabled") == 0 || strcmp(key, "csi_auto_heal") == 0) {
+            if (val != 0 && val != 1) {
+                cJSON_Delete(json);
+                return json_error(req, "csi bool keys must be 0 or 1", HTTPD_400_BAD_REQUEST);
+            }
         }
 
         char value_str[16];
@@ -621,6 +685,14 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
 
     if (updated > 0) {
         config_save();
+    }
+
+    /* CSI 键族热应用（契约 v1.7；threshold 显式改 0=恢复自动，带重校准） */
+    if (csi_changed) {
+        if (config_get_csi_threshold() == 0.0f && prev_csi_thr > 0.0f) {
+            csi_motion_set_threshold(0.0f);
+        }
+        csi_motion_apply_config();
     }
 
     /* timezone 立即生效（契约 §3.1，同 seeed/ai-thinker）：本板无 NTP，
@@ -822,7 +894,7 @@ static esp_err_t api_capabilities_handler(httpd_req_t *req)
     }
     
     /* 契约 v1.0：12 个布尔能力位 + api_version/wifi_scan（见 docs/api-contract.md） */
-    cJSON_AddStringToObject(data, "api_version", "1.6");
+    cJSON_AddStringToObject(data, "api_version", "1.7");
     cJSON_AddBoolToObject(data, "wifi_scan", true);
     cJSON_AddBoolToObject(data, "ai",        true);   /* Has AI pipeline */
     cJSON_AddBoolToObject(data, "sd",        false);  /* No SD card */
@@ -1135,6 +1207,26 @@ static esp_err_t api_reboot_handler(httpd_req_t *req)
     return ESP_OK;  /* not reached */
 }
 
+/** @brief 触发 CSI 立即重校准（契约 v1.7；write auth。CSI-off 板 404，
+ *  运行时未就绪 503），背景执行，进度经 csi.calibrating / 串口日志。 */
+static esp_err_t api_csi_calibrate_handler(httpd_req_t *req)
+{
+    esp_err_t ret = require_auth(req);
+    if (ret != ESP_OK) return ret;
+
+    esp_err_t cr = csi_motion_recalibrate();
+    if (cr == ESP_ERR_NOT_SUPPORTED) {
+        return json_error(req, "CSI sensing not built (csi_motion capability absent)",
+                          HTTPD_404_NOT_FOUND);
+    }
+    if (cr != ESP_OK) {
+        return json_error(req, "CSI runtime not ready (no Wi-Fi link?)", 503);
+    }
+    cJSON *data = cJSON_CreateObject();
+    cJSON_AddStringToObject(data, "message", "CSI recalibration started");
+    return json_ok(req, data);
+}
+
 static esp_err_t api_auth_handler(httpd_req_t *req)
 {
     const char *stored = config_get_web_password();
@@ -1278,6 +1370,7 @@ static const uri_entry_t s_uris[] = {
     { "/api/scan",      HTTP_GET,     api_scan_handler             },
     { "/api/reset",     HTTP_POST,    api_reset_handler            },
     { "/api/reboot",    HTTP_POST,    api_reboot_handler           },
+    { "/api/csi/calibrate", HTTP_POST, api_csi_calibrate_handler   },   /* 契约 v1.7 */
     { "/api/auth",      HTTP_GET,     api_auth_handler             },
     { "/api/time",      HTTP_POST,    api_time_handler             },
     { "/metrics",       HTTP_GET,     metrics_handler              },
