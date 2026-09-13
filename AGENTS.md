@@ -586,3 +586,30 @@ CSI 扇出点在 `csi_motion.cpp` 的 `on_motion_state_changed`（本板此前�
 带可选 `csi` 对象（与心跳同形同值），SPA 的 1Hz 轮询消费它驱动胶囊。
 快照源 `csi_motion_get_status()`（`csi_motion.cpp` 内 portMUX 单写者快照，
 `on_periodic_update` ~1Hz 写、httpd worker 读，读侧不阻塞感知回调）。
+
+## 2026-09-13 部署：LED 修复上板（issue #11）+ PIT-050 + LED 稳定性实测
+
+**背景**：用户报（.119）"灯亮了就几乎连不上 + POST /api/led 500"。板上实为
+`5e3ab5a-dirty`（v0.1.0-test-49，2026-09-10 构建）——**缺 2985d1f**（LED init
+补调用 + 护栏对齐 + socket 16→24 + PIT-037 悬垂防护）。500 复现签名
+`Flash LED control failed` = LED 模块从未 init。
+
+**OTA 险情（老固件）**：3.97MB 镜像前两传分别死在 ~2MB/95s 与全量末尾
+（http=000 + 板复位、镜像未落地）——与 2985d1f 修的"churn 无护栏 90s 级重启
+循环"时间尺度吻合。第 3、4 传全量 200 成功（新固件 OTA 通道此后一次过 86s）。
+**教训：老固件 OTA 失败先重试两三次再降级 USB**。
+
+**部署后实测**：`/api/led` 全亮度档 200（含 100/30/0）；**LED@100 + CSI 并存
++ 40×/api/status 连续探测 + /api/capture（48KB/0.31s）零复位、RTT 大多
+<200ms**——"灯亮=连不上"在新固件不复现（老固件的 LED 无 init + churn 重启
+循环共同制造的表象）。若用户侧仍复现，才查供电/线缆。
+
+**自摆乌龙（PIT-007 变体）**：fresh 机器上跑 `idf.py set-target esp32s3`
+**重新生成 sdkconfig**，把 gitignored 的 `MIBEE_CSI_MOTION=y` + 本地密码
+覆盖回 defaults（症状：部署后 `/api/status` 无 `csi` 对象）。恢复自
+`sdkconfig.old`（set-target 自动备份）。**sdkconfig 已存在时不要跑
+set-target**；跑过必查 `sdkconfig.old`。
+
+**遗留观察（新旧固件同表现，非回归）**：本机对 `:81/stream` 的连接
+GET 后立即 RST（探针 0 帧×5 断连）；NVR（.30）的会话在（clients=1）。
+待查：单槽互踢 vs 堆地板任务创建失败 vs RTSP 路径优先。
