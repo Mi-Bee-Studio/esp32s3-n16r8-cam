@@ -835,10 +835,12 @@ static esp_err_t api_ai_handler(httpd_req_t *req)
 
 static esp_err_t ai_status_get_handler(httpd_req_t *req)
 {
-    ai_result_t result;
-    if (!ai_get_result(&result)) {
-        return json_error(req, "AI pipeline not running", HTTPD_404_NOT_FOUND);
-    }
+    /* AI 休眠（PIT-052 惰性初始化）/ 全关 / 尚无结果时回零值结果而非
+     * 404：SPA 每 500ms 轮询本端点，404 既刷设备日志（每请求两行）
+     * 又语义错误——"无结果"≠"资源不存在"。零值形状与正常响应一致，
+     * SPA 的既有空值守卫直接吞掉。 */
+    ai_result_t result = {0};
+    (void)ai_get_result(&result);
 
     cJSON *data = cJSON_CreateObject();
     if (!data) {
