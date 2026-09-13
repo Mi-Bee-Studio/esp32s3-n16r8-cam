@@ -1,4 +1,4 @@
-idf_component_register(SRCS "main.c" "camera_driver.c" "status_led.c" "flash_led.c" "config_manager.c" "frame_broadcaster.c" "wifi_manager.c" "time_sync.c" "web_server.c" "mjpeg_streamer.c" "rtsp_server.cpp" "ai_pipeline.cpp" "onvif_discovery.c" "onvif_service.c" "onvif_events.c" "at_command.c" "at_port.c" "ota_updater.c" "device_id.c" "csi_motion.cpp"
+idf_component_register(SRCS "main.c" "camera_driver.c" "status_led.c" "flash_led.c" "config_manager.c" "frame_broadcaster.c" "wifi_manager.c" "time_sync.c" "web_server.c" "mjpeg_streamer.c" "rtsp_server.cpp" "ai_pipeline.cpp" "onvif_discovery.c" "onvif_service.c" "onvif_events.c" "at_command.c" "at_port.c" "ota_updater.c" "device_id.c" "csi_motion.cpp" "wifi_channel_health.c"
                     INCLUDE_DIRS "."
                     REQUIRES esp-dl human_face_detect quirc nvs_flash spiffs
                     esp_driver_gpio esp_driver_uart esp_driver_tsens esp_wifi esp_netif esp_event esp_http_server espressif__cjson mdns

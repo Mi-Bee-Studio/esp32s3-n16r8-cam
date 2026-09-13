@@ -69,6 +69,12 @@ KEY_ASSERT("cam_vflip");
 KEY_ASSERT("cam_hmirror");
 KEY_ASSERT("onvif_enable");
 KEY_ASSERT("onvif_events");
+KEY_ASSERT("csi_enabled");
+KEY_ASSERT("csi_threshold");
+KEY_ASSERT("csi_on_hits");
+KEY_ASSERT("csi_off_hits");
+KEY_ASSERT("csi_profile");
+KEY_ASSERT("csi_auto_heal");
 KEY_ASSERT("ai_face_en");
 KEY_ASSERT("ai_motion_en");
 KEY_ASSERT("ai_qr_en");
@@ -108,6 +114,14 @@ typedef struct {
     char    web_password[65];
     bool    onvif_enable;
     bool    onvif_events;   /* 契约 v1.5：ONVIF MotionAlarm 生成开关（默认关） */
+    /* CSI 感知调参键族（契约 v1.7 §3.2）。threshold 以百分刻度 u8 持久化
+     * （0=auto；5-100 ↔ 0.05-1.00），JSON 面由 web 层换算 float。 */
+    bool    csi_enabled;
+    uint8_t csi_threshold_pct;
+    uint8_t csi_on_hits;
+    uint8_t csi_off_hits;
+    uint8_t csi_profile;
+    bool    csi_auto_heal;
     int8_t  cam_brightness;   /* OV3660 brightness: -2..+2 */
     int8_t  cam_contrast;     /* OV3660 contrast: -2..+2 */
     int8_t  cam_saturation;   /* OV3660 saturation: -2..+2 */
@@ -142,6 +156,12 @@ static const config_t s_defaults = {
     .web_password    = DEFAULT_WEB_PASSWORD,   /* 契约 v1.1 家族统一默认 */
     .onvif_enable    = true,
     .onvif_events    = false,
+    .csi_enabled     = true,
+    .csi_threshold_pct = 0,   /* 0 = auto（校准+settle） */
+    .csi_on_hits     = 4,
+    .csi_off_hits    = 3,
+    .csi_profile     = 0,     /* Lightweight */
+    .csi_auto_heal   = true,  /* 自愈环默认开（PIT-041） */
     .cam_brightness  = 0,
     .cam_contrast    = 0,
     .cam_saturation  = 0,
@@ -200,6 +220,12 @@ static const key_entry_t s_keys[] = {
     { "web_password",    TYPE_STRING, OFF_STR(web_password)    },
     { "onvif_enable",    TYPE_U8,     OFF_U8(onvif_enable)     },
     { "onvif_events",    TYPE_U8,     OFF_U8(onvif_events)     },
+    { "csi_enabled",     TYPE_U8,     OFF_U8(csi_enabled)      },
+    { "csi_threshold",   TYPE_U8,     OFF_U8(csi_threshold_pct)},
+    { "csi_on_hits",     TYPE_U8,     OFF_U8(csi_on_hits)      },
+    { "csi_off_hits",    TYPE_U8,     OFF_U8(csi_off_hits)     },
+    { "csi_profile",     TYPE_U8,     OFF_U8(csi_profile)      },
+    { "csi_auto_heal",   TYPE_U8,     OFF_U8(csi_auto_heal)    },
     { "cam_brightness",  TYPE_I8,     OFF_I8(cam_brightness)   },
     { "cam_contrast",    TYPE_I8,     OFF_I8(cam_contrast)     },
     { "cam_saturation",  TYPE_I8,     OFF_I8(cam_saturation)   },
@@ -561,6 +587,12 @@ const char *config_get_rtsp_user(void)      { return s_config.rtsp_user; }
 const char *config_get_rtsp_pass(void)      { return s_config.rtsp_pass; }
 bool        config_get_onvif_enable(void)   { return s_config.onvif_enable; }
 bool        config_get_onvif_events(void)   { return s_config.onvif_events; }
+bool        config_get_csi_enabled(void)    { return s_config.csi_enabled; }
+float       config_get_csi_threshold(void)  { return s_config.csi_threshold_pct / 100.0f; }
+uint8_t     config_get_csi_on_hits(void)    { return s_config.csi_on_hits; }
+uint8_t     config_get_csi_off_hits(void)   { return s_config.csi_off_hits; }
+uint8_t     config_get_csi_profile(void)    { return s_config.csi_profile; }
+bool        config_get_csi_auto_heal(void)  { return s_config.csi_auto_heal; }
 
 int8_t config_get_cam_brightness(void) { return s_config.cam_brightness; }
 int8_t config_get_cam_contrast(void)   { return s_config.cam_contrast; }
