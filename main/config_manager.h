@@ -103,6 +103,7 @@ uint8_t     config_get_csi_on_hits(void);
 uint8_t     config_get_csi_off_hits(void);
 uint8_t     config_get_csi_profile(void);
 bool        config_get_csi_auto_heal(void);
+bool        config_get_flash_viewers(void);   /* 板级扩展：观看者驱动闪光灯 */
 
 int8_t     config_get_cam_brightness(void);
 int8_t     config_get_cam_contrast(void);

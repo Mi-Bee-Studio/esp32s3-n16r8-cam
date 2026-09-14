@@ -32,6 +32,7 @@
 #include "config_manager.h"
 #include "wifi_manager.h"
 #include "flash_led.h"
+#include "flash_viewers.h"   /* 板级扩展：观看者驱动闪光灯 */
 #include "ai_pipeline.h"
 #include "camera_driver.h"
 #include "esp_camera.h"
@@ -373,6 +374,16 @@ static esp_err_t api_status_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(data, "stream_clients",
         mjpeg_stream_client_count());
     cJSON_AddNumberToObject(data, "stream_clients_max", 2);
+
+    /* Viewer-driven flash LED watcher (板级扩展 flash_viewers) */
+    {
+        cJSON *fv = cJSON_CreateObject();
+        if (fv) {
+            cJSON_AddNumberToObject(fv, "enabled", (double)config_get_flash_viewers());
+            cJSON_AddNumberToObject(fv, "active", (double)flash_viewers_active());
+            cJSON_AddItemToObject(data, "flash_viewers", fv);
+        }
+    }
     cJSON_AddNumberToObject(data, "uptime",
         (double)(esp_timer_get_time() / 1000000));
 
@@ -471,6 +482,8 @@ static esp_err_t api_config_get_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(data, "csi_off_hits",     (double)config_get_csi_off_hits());
     cJSON_AddNumberToObject(data, "csi_profile",      (double)config_get_csi_profile());
     cJSON_AddBoolToObject(data,   "csi_auto_heal",    config_get_csi_auto_heal());
+    /* 板级扩展：观看者驱动闪光灯（有此键=板支持，SPA 据此显示开关） */
+    cJSON_AddBoolToObject(data,   "flash_viewers",    config_get_flash_viewers());
     cJSON_AddNumberToObject(data, "cam_brightness", config_get_cam_brightness());
     cJSON_AddNumberToObject(data, "cam_contrast",   config_get_cam_contrast());
     cJSON_AddNumberToObject(data, "cam_saturation", config_get_cam_saturation());
@@ -535,6 +548,7 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
         "cam_hmirror", "cam_vflip",
         "csi_enabled", "csi_threshold", "csi_on_hits", "csi_off_hits",
         "csi_profile", "csi_auto_heal",
+        "flash_viewers",
         NULL
     };
 
@@ -667,7 +681,8 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
                 cJSON_Delete(json);
                 return json_error(req, "csi_profile must be 0 or 1", HTTPD_400_BAD_REQUEST);
             }
-        } else if (strcmp(key, "csi_enabled") == 0 || strcmp(key, "csi_auto_heal") == 0) {
+        } else if (strcmp(key, "csi_enabled") == 0 || strcmp(key, "csi_auto_heal") == 0
+                   || strcmp(key, "flash_viewers") == 0) {
             if (val != 0 && val != 1) {
                 cJSON_Delete(json);
                 return json_error(req, "csi bool keys must be 0 or 1", HTTPD_400_BAD_REQUEST);
@@ -1113,6 +1128,7 @@ static esp_err_t options_handler(httpd_req_t *req)
 
 static esp_err_t api_capture_handler(httpd_req_t *req)
 {
+    flash_viewers_notify_capture();  /* 板级扩展：拍照期间保持闪光灯判定在场 */
     camera_fb_t *fb = camera_capture();
     if (!fb) {
         return json_error(req, "Capture failed", HTTPD_500_INTERNAL_SERVER_ERROR);
