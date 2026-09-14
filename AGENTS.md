@@ -613,3 +613,31 @@ set-target**；跑过必查 `sdkconfig.old`。
 **遗留观察（新旧固件同表现，非回归）**：本机对 `:81/stream` 的连接
 GET 后立即 RST（探针 0 帧×5 断连）；NVR（.30）的会话在（clients=1）。
 待查：单槽互踢 vs 堆地板任务创建失败 vs RTSP 路径优先。
+
+## 2026-09-14 flash_viewers 板级扩展移植（已实现+构建，两台存量单元部署受阻）
+
+用户需求"有闪光灯的板都要有观看者驱动闪光灯"：家族四仓中仅 ai-thinker 与
+本板有闪光灯（seeed/luatos 能力位 flash_led=false 无硬件，SPA 开关因 config
+无键天然隐藏）。本板移植完成：
+
+- `flash_viewers.c/h`（适配本板 API：`mjpeg_stream_client_count()` /
+  `flash_led_get_brightness()` 判亮 / `config_get_flash_viewers()`）；
+  1Hz 静态栈任务，观看者=流客户端>0 或 3s 内有 /api/capture，20s grace
+  防频闪；默认关。
+- config 走表驱动：结构体 `bool flash_viewers` + 默认 false +
+  `KEY_ASSERT("flash_viewers")` + 表项 `{ TYPE_U8 }` + getter；web_server
+  GET 加 bool、POST 白名单+0/1 校验分支、status 加 `flash_viewers:
+  {enabled,active}`、api_capture_handler 加 notify 钩子；main.c 在
+  `mjpeg_stream_server_start(81)` 后 start；CMakeLists 加源文件。
+- 家族 SPA（四仓已同步）按"config 键在位"自动显示开关，本板固件上线即用。
+- `idf.py build` 通过（v6.0.1，bin 4.07MB < ota 槽 5MB；spiffs 512KB）。
+
+**部署受阻（两台在线单元 .113/.119 均跑 v0.1.1 test-54/55）**：网络 OTA
+两次尝试均在 ~2min 处失败（1.5MB/12.5KB/s 后连接断、设备重启）——v0.1.1
+的 health 自愈在上传占死 httpd 时连败 6 探针 → esp_restart（PIT 自愈误杀
+家族 bug 的老固件表现，新固件已修，鸡生蛋）。迁移风险已评估为低（首基线
+即逐键 NVS，wifi_ssid/wifi_pass/web_password 键名贯穿全历史，缺失键=默认
+值，AI 键改名有 lazy 迁移），但传输层过不去。**解锁路径**：两台上 USB
+（原生 USB-OTG 口，PIT-044 注意 DTR/RTS）后 `idf.py -p <口> flash`，或
+短期大量重试碰运气（成功率低）。build 产物已就绪（build/mibee_cam.bin +
+build/spiffs.bin，含本移植与四仓 SPA 同步版）。
