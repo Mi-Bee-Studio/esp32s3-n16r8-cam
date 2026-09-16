@@ -39,6 +39,7 @@
 #include "wifi_channel_health.h"
 #include "web_server.h"
 #include "mjpeg_streamer.h"
+#include "flash_viewers.h"
 #include "rtsp_server.h"
 #include "frame_broadcaster.h"
 #include "ai_pipeline.h"
@@ -284,6 +285,9 @@ void app_main(void)
         } else {
             ESP_LOGE(TAG, "MJPEG streamer start failed: %s", esp_err_to_name(mjpeg_srv_err));
         }
+
+        /* Viewer-driven flash LED watcher (板级扩展 flash_viewers，默认关) */
+        flash_viewers_start();
     }
 
     /* ---- 6. RTSP server (MJPEG-only, digest auth) --------------------- */

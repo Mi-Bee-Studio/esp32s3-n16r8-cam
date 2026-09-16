@@ -75,6 +75,7 @@ KEY_ASSERT("csi_on_hits");
 KEY_ASSERT("csi_off_hits");
 KEY_ASSERT("csi_profile");
 KEY_ASSERT("csi_auto_heal");
+KEY_ASSERT("flash_viewers");
 KEY_ASSERT("ai_face_en");
 KEY_ASSERT("ai_motion_en");
 KEY_ASSERT("ai_qr_en");
@@ -128,6 +129,7 @@ typedef struct {
     int8_t  cam_sharpness;    /* OV3660 sharpness range TBD from sensor_t */
     bool    cam_hmirror;      /* horizontal mirror */
     bool    cam_vflip;        /* vertical flip */
+    bool    flash_viewers;    /* 板级扩展：有观看者（流/拍照）自动开闪光灯，默认 false */
     char    device_name[33];  /* 契约 v1.0: 设备名称 */
     char    timezone[48];     /* 契约 §3.1：POSIX TZ str≤47，空 = UTC */
     bool    allow_ap_fallback;/* 契约 §3.1：STA 失败兜底 AP（NVS 键 ap_fallback，
@@ -167,6 +169,7 @@ static const config_t s_defaults = {
     .cam_saturation  = 0,
     .cam_sharpness   = 0,
     .cam_hmirror     = false,
+    .flash_viewers   = false,  /* 板级扩展：观看者驱动闪光灯，默认关 */
     .cam_vflip       = false,
     .device_name     = "MiBeeCam",
     .timezone        = "",               /* 空 = UTC（契约 §3.1） */
@@ -226,6 +229,7 @@ static const key_entry_t s_keys[] = {
     { "csi_off_hits",    TYPE_U8,     OFF_U8(csi_off_hits)     },
     { "csi_profile",     TYPE_U8,     OFF_U8(csi_profile)      },
     { "csi_auto_heal",   TYPE_U8,     OFF_U8(csi_auto_heal)    },
+    { "flash_viewers",   TYPE_U8,     OFF_U8(flash_viewers)    },   /* 板级扩展 */
     { "cam_brightness",  TYPE_I8,     OFF_I8(cam_brightness)   },
     { "cam_contrast",    TYPE_I8,     OFF_I8(cam_contrast)     },
     { "cam_saturation",  TYPE_I8,     OFF_I8(cam_saturation)   },
@@ -593,6 +597,7 @@ uint8_t     config_get_csi_on_hits(void)    { return s_config.csi_on_hits; }
 uint8_t     config_get_csi_off_hits(void)   { return s_config.csi_off_hits; }
 uint8_t     config_get_csi_profile(void)    { return s_config.csi_profile; }
 bool        config_get_csi_auto_heal(void)  { return s_config.csi_auto_heal; }
+bool        config_get_flash_viewers(void)  { return s_config.flash_viewers; }   /* 板级扩展 */
 
 int8_t config_get_cam_brightness(void) { return s_config.cam_brightness; }
 int8_t config_get_cam_contrast(void)   { return s_config.cam_contrast; }
