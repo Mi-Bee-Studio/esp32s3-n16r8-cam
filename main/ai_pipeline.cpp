@@ -78,6 +78,12 @@ static bool s_enabled[AI_FEATURE_COUNT] = {
     true    /* AI_FEATURE_QR_DECODE     */
 };
 
+/* 惰性初始化（issue #11 内部堆地板）：AI 全关的板子上模型+QR+任务
+ * 白占 ~57KB 内部 DRAM，把 MJPEG/RTSP 的任务创建挤死在地板上。
+ * ai_init() 只建互斥锁并置 dormant；首个特性"开"（boot 布线或
+ * POST /api/ai / AT）才做重初始化。 */
+static volatile bool s_dormant = false;
+
 /* ---- Face detection model --------------------------------------- */
 
 #ifdef AI_FACE_DETECT_ENABLED
@@ -402,10 +408,6 @@ esp_err_t ai_init(void)
 {
     ESP_LOGI(TAG, "AI pipeline init ...");
 
-    size_t heap_before = esp_get_free_internal_heap_size();
-    ESP_LOGI(TAG, "Internal heap before AI init: %u",
-             (unsigned)heap_before);
-
     /* ---- Mutexes ------------------------------------------------- */
     s_result_mutex = xSemaphoreCreateMutex();
     s_config_mutex = xSemaphoreCreateMutex();
@@ -413,6 +415,22 @@ esp_err_t ai_init(void)
         ESP_LOGE(TAG, "Failed to create mutexes");
         return ESP_FAIL;
     }
+
+    /* 重初始化（灰度缓冲/模型/QR/任务）延迟到首个特性开启——见
+     * s_dormant 注释。main.c 紧随其后的 ai_enable(…, true) 会触发
+     * ai_wake()，NVS 存有开启特性时行为与旧版完全一致。 */
+    s_dormant = true;
+    ESP_LOGI(TAG, "AI pipeline dormant — heavy init deferred until a feature is enabled");
+    return ESP_OK;
+}
+
+/* 重初始化：必须在持 s_config_mutex 时调用（ai_wake 负责），
+ * 内部不得再取该锁。 */
+static esp_err_t ai_heavy_init(void)
+{
+    size_t heap_before = esp_get_free_internal_heap_size();
+    ESP_LOGI(TAG, "Internal heap before AI init: %u",
+             (unsigned)heap_before);
 
     /* ---- Allocate grayscale buffers in PSRAM --------------------- */
     s_gray_buf  = (uint8_t *)heap_caps_malloc(AI_NUM_PIX, MALLOC_CAP_SPIRAM);
@@ -462,16 +480,51 @@ esp_err_t ai_init(void)
         /* Continue anyway — motion + QR may still function */
     }
 
-
     /* ---- Start the AI task on Core 1 ----------------------------- */
     esp_err_t task_err = ai_start_task();
     if (task_err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start AI task");
+        /* 失败即回收：任务没起来时模型/QR/缓冲全部释放并复位，否则
+         * 保持休眠态的半初始化 + 重试唤醒会二次分配（每次泄漏 ~15KB）。 */
+#ifdef AI_FACE_DETECT_ENABLED
+        if (s_detect) { delete s_detect; s_detect = nullptr; }
+#endif
+        if (s_qr) { quirc_destroy(s_qr); s_qr = NULL; }
+        if (s_gray_buf)  { heap_caps_free(s_gray_buf);  s_gray_buf  = NULL; }
+        if (s_prev_gray) { heap_caps_free(s_prev_gray); s_prev_gray = NULL; }
         return task_err;
     }
 
     ESP_LOGI(TAG, "AI pipeline initialised successfully");
     return ESP_OK;
+}
+
+/* 休眠态唤醒：整段持 s_config_mutex 串行化并发唤醒（httpd 多 worker
+ * 可能同时打 POST /api/ai）。持锁期间 ai_is_enabled() 的 50ms 试锁
+ * 只会读到旧值/超时跳过，无死锁路径。 */
+static void ai_wake(void)
+{
+    if (!s_dormant) return;
+
+    if (xSemaphoreTake(s_config_mutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+        ESP_LOGE(TAG, "ai_wake: config mutex busy — wake aborted");
+        return;
+    }
+    if (!s_dormant) {              /* 双重检查：他人已唤醒 */
+        xSemaphoreGive(s_config_mutex);
+        return;
+    }
+
+    esp_err_t err = ai_heavy_init();
+    if (err == ESP_OK) {
+        s_dormant = false;
+    } else {
+        /* 唤醒失败保持 dormant：特性位已置位但无任务，/api/ai/status
+         * 出空结果 + 本条 ERROR 即现场真相；下次开启会重试唤醒。 */
+        ESP_LOGE(TAG, "AI wake failed (%s) — staying dormant",
+                 esp_err_to_name(err));
+    }
+    xSemaphoreGive(s_config_mutex);
 }
 
 void ai_process_frame(camera_fb_t *fb)
@@ -507,6 +560,12 @@ void ai_enable(ai_feature_t feature, bool enable)
 
     ESP_LOGI(TAG, "Feature %d %s", (int)feature,
              enable ? "enabled" : "disabled");
+
+    /* 惰性唤醒：休眠态收到首个"开"才加载模型/QR/任务（issue #11）。
+     * 放在锁外调用——ai_wake 自持 s_config_mutex 全程串行化。 */
+    if (enable && s_dormant) {
+        ai_wake();
+    }
 }
 
 bool ai_is_enabled(ai_feature_t feature)
