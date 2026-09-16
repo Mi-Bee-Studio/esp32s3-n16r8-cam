@@ -354,6 +354,22 @@ static void start_sta(void)
     strlcpy(s_current_ssid, ssid ? ssid : "", sizeof(s_current_ssid));
 
     ESP_ERROR_CHECK(esp_wifi_start());
+
+    /* 射频调优（2026-09-13 实测驱动，AGENTS 2026-09-04 挂账候选落地）：
+     * 静默基线 ping 10-33% 丢包、RTT 均值 177ms/峰值 525ms——RSSI -40dBm
+     * 强信号下唯一合理解释是射频睡眠 + HT40 邻道干扰。
+     * ① PS_NONE：IDF 默认 MIN_MODEM 让射频在 DTIM 间休眠，对浏览器页
+     *    加载/预览这类延迟敏感流量就是延迟尖峰+丢包；本板 USB 供电，
+     *    流媒体设备不省这点电（家族 PIT-001 备注"出厂应 PS_NONE"，
+     *    本仓此前漏设）。
+     * ② HT20：2.4G HT40 要占第二个 20MHz 信道，ch7 环境给不起；
+     *    HT20 72Mbps PHY 远超推流需求。AMPDU 维持关闭不动（PIT 复测结论）。 */
+    esp_err_t ps_err = esp_wifi_set_ps(WIFI_PS_NONE);
+    /* BW 不强制：2026-09-13 A/B 实验——HT20 强制后双客户端拉流下 ping
+     * 52.5% 丢包/RTT 173ms（每帧占双倍空口时间，负载态更糟），回退
+     * 跟随 AP 协商；PS_NONE 保留（延迟尖峰根因）。挪信道是 AP 侧动作。 */
+    ESP_LOGI(TAG, "radio tune: PS_NONE ret=%s", esp_err_to_name(ps_err));
+
     /* STA_START 事件里统一走 sta_apply_and_connect（凭据 + 连接） */
     status_led_set_color(STATUS_LED_RED);
 }

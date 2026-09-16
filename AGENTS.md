@@ -396,6 +396,12 @@ idf.py fullclean && idf.py set-target esp32s3 && idf.py build
 supported_resolutions/POST/AT+CAMRES/camera_init/camera_reinit/NVS 加载全部收敛 VGA。
 推流仅 ~0.4fps：本板 ch11 HT40 弱态网络所致（TCP 窗口已提至家族值 49152/32768 无感、
 AMPDU 重开实验无增益且伴一次失联——已回退 =n，调优候选是挪信道/关 HT40）。
+**射频调优 2026-09-13 落地（.119 实测，PIT-053）**：① `esp_wifi_set_ps(WIFI_PS_NONE)`
+入 wifi_manager（此前漏设=IDF 默认 MIN_MODEM 射频休眠，同负载 A/B：丢包 10%→3.3%、
+RTT 均值 177→106ms——"信号强但页打不开"的头号根因）；② 强制 HT20 已试**并回退**
+（双客户端拉流下每帧双倍空口时间，ping 52.5% 丢包，负优化，现跟随 AP 协商）；
+③ 挪信道仍待 AP 侧动作。另：.30（NVR 查看端）+ .9（NVR 录像）双路拉流会把弱链路
+打进失聪窗，属负载物理非固件可救。
 NVS 观察项：连续 AT 改 AI 键后出现 `Failed to write NVS key 'ai_motion_enable'`（运行时生效、持久化失败）——待查 NVS 页空间。
 
 ## Camera quality bounds (2026-09-04, applied)

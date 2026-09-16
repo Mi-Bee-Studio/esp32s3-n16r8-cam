@@ -25,12 +25,18 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_heap_caps.h"
+#if CONFIG_HEAP_TASK_TRACKING
+/* 内部堆地板诊断（issue #11 遗留专项）：生产构建（sdkconfig.defaults）不开
+ * 此选项，仅诊断构建在本地 gitignored sdkconfig 里开启，代码零开销保留。 */
+#include "esp_heap_task_info.h"
+#endif
 #include "driver/gpio.h"
 #include "camera_driver.h"
 #include "config_manager.h"
 #include "wifi_manager.h"
 #include "time_sync.h"
 #include "csi_motion.h"
+#include "wifi_channel_health.h"
 #include "web_server.h"
 #include "mjpeg_streamer.h"
 #include "rtsp_server.h"
@@ -39,6 +45,8 @@
 #include "onvif_discovery.h"
 #include "at_command.h"
 #include "ota_updater.h"
+#include "flash_led.h"
+#include "status_led.h"
 #include "lwip/sockets.h"
 #include "lwip/inet.h"
 
@@ -118,6 +126,24 @@ static void init_spiffs(void)
 /*  app_main                                                          */
 /* ------------------------------------------------------------------ */
 
+#if CONFIG_HEAP_TASK_TRACKING
+/* 内部堆地板诊断（issue #11 遗留）：打区域总量 + 每任务堆用量全景。
+ * 依赖 CONFIG_HEAP_TRACK_DELETED_TASKS 才能看到已删除任务的遗留分配。 */
+static void heap_diag_dump(int seq)
+{
+    ESP_LOGI(TAG, "=== HEAP DIAG #%d internal=%lu psram=%lu min_free_int=%lu ===",
+             seq,
+             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (unsigned long)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+    heap_caps_print_heap_info(MALLOC_CAP_INTERNAL);
+    heap_caps_print_all_task_stat_overview(NULL);
+    fflush(stdout);
+}
+#else
+static void heap_diag_dump(int seq) { (void)seq; }
+#endif
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "MiBee Cam v0.1 starting...");
@@ -166,6 +192,7 @@ void app_main(void)
 
     /* ---- 3a. ESPectre CSI motion sensing (optional, after WiFi) ------- */
     csi_motion_init();
+    wifi_channel_health_init();   /* 契约 v1.7 ①b：信道健康感知（CSI 无关，四仓共享） */
 
     /* ---- 3b. SNTP time sync (issue #7：ONVIF 事件时戳 1970 纪元修复) -- */
     /* WiFi 已连（重启到已保存网络时会很快）即同步；未连由主循环每 60s
@@ -174,7 +201,7 @@ void app_main(void)
         time_sync_init();
     }
 
-    /* ---- 4. Camera init + flash LED probe ------------------------- */
+    /* ---- 4. Camera init + LED 子系统初始化 ------------------------- */
     {
         esp_err_t cam_err = camera_init();
         if (cam_err == ESP_OK) {
@@ -185,21 +212,23 @@ void app_main(void)
                          fb->width, fb->height, (unsigned)fb->len);
                 esp_camera_fb_return(fb);
             }
-
-            /* ---- Probe flash LED on GPIO 2, 3, 46 ------------------ */
-            const int flash_candidates[] = {2, 3, 46};
-            for (int i = 0; i < 3; i++) {
-                int gpio = flash_candidates[i];
-                gpio_set_direction(gpio, GPIO_MODE_OUTPUT);
-                gpio_set_level(gpio, 1);
-                ESP_LOGI(TAG, "Flash probe: GPIO %d = HIGH, waiting 2s...", gpio);
-                vTaskDelay(pdMS_TO_TICKS(2000));
-                gpio_set_level(gpio, 0);
-                ESP_LOGI(TAG, "Flash probe: GPIO %d = LOW", gpio);
-            }
-            ESP_LOGW(TAG, "Flash LED probe complete \u2014 visually check which GPIO lit the LED");
         } else {
-            ESP_LOGE(TAG, "Camera init failed, skipping frame capture + flash probe");
+            ESP_LOGE(TAG, "Camera init failed, skipping frame capture");
+        }
+
+        /* 2026-09-11（issue #11 §四）：flash_led/status_led 自基线起就没有
+         * init 调用——AT+LED / POST /api/led 恒 INVALID_STATE、状态灯从未
+         * 点亮。此处补上初始化。引脚说明：flash LED 取 GPIO2（社区板型资料
+         * 主流说法，也是原开机探测候选之一；不同批次板 LED 位置不同，点亮
+         * 与否以实板为准，运行时配置键方案见 issue 待办）；status LED 维持
+         * 模块内默认（WS2812@48，devkit 系参考设计）。原 GPIO 2/3/46 探测
+         * 舞蹈移除——每次开机白耗 6s，且裸 gpio_set_level 与 LEDC/RMT 驱动
+         * 冲突。 */
+        if (flash_led_init(GPIO_NUM_2) != ESP_OK) {
+            ESP_LOGW(TAG, "Flash LED init failed — AT+LED/api/led will error");
+        }
+        if (status_led_init() != ESP_OK) {
+            ESP_LOGW(TAG, "Status LED init failed — wifi status colors unavailable");
         }
     }
 
@@ -288,6 +317,7 @@ void app_main(void)
     at_command_init();
 
     /* Idle loop */
+    heap_diag_dump(0);   /* 启动完成即取全景基线（WiFi/httpd/mjpeg 已建） */
     while (1) {
         /* SNTP 重试（issue #7）：开机未连网时 3b 跳过，这里每 60s 补；
          * 已同步后 time_sync_init 幂等直接返回。 */
@@ -314,7 +344,15 @@ void app_main(void)
         } else {
             httpd_stuck_count = 0;
         }
-        
+
+        /* 堆诊断：第 1/2/3 分钟各打一次（覆盖地板形成期），之后每 30 分钟一次 */
+        {
+            static int diag_cycle = 0;
+            if (diag_cycle >= 1 && diag_cycle <= 3) heap_diag_dump(diag_cycle);
+            else if (diag_cycle > 3 && (diag_cycle % 30) == 0) heap_diag_dump(diag_cycle);
+            diag_cycle++;
+        }
+
         vTaskDelay(pdMS_TO_TICKS(60000));
         ESP_LOGD(TAG, "Heartbeat: heap=%lu PSRAM=%lu",
                  (unsigned long)esp_get_free_heap_size(),
