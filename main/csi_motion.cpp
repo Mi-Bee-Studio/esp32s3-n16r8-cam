@@ -27,6 +27,7 @@
 #include <cstring>
 
 #include "esp_log.h"
+#include "esp_task_wdt.h"  /* PIT-05x 楔死诊断网：任务自订阅 TWDT */
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -300,7 +301,14 @@ void csi_motion_task(void *unused)
     csi_motion_apply_config();
     ESP_LOGI(TAG, "ESPectre sensing started (pps=%u mode=%d)",
              (unsigned)config.csi_target_pps, (int)config.csi_traffic_mode);
+    if (esp_task_wdt_add(nullptr) != ESP_OK) {
+        ESP_LOGW(TAG, "task wdt subscribe failed — wedge net INACTIVE");
+    }
     while (true) {
+        /* 楔死诊断网（PIT-05x）：本任务是既往 wedge 中最早变哑者（1Hz 日志停）。
+         * 订阅 TWDT 后，若因日志锁/互斥类阻塞 >10s，将触发带回溯的复位而非静默
+         * freeze——把不可诊断的挂死转换成可读 dump。20ms 节拍 vs 10s 超时，余量充足。 */
+        esp_task_wdt_reset();
         s_controller.loop();
         const int64_t now_us = esp_timer_get_time();
         flip_advance(now_us);

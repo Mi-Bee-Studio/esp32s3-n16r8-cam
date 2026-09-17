@@ -28,6 +28,7 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_task_wdt.h"  /* 楔死诊断网 */
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -138,7 +139,11 @@ static void chan_health_task(void *unused)
 {
     (void)unused;
     int64_t next_sample_us = 0;
+    if (esp_task_wdt_add(NULL) != ESP_OK) {
+        ESP_LOGW(TAG, "task wdt subscribe failed — wedge net INACTIVE");
+    }
     while (true) {
+        esp_task_wdt_reset();   /* 楔死诊断网：5s 节拍 + ~2s 扫描 < 10s TWDT */
         const int64_t now_us = esp_timer_get_time();
         disc_advance(now_us);
 
