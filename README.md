@@ -51,6 +51,12 @@ idf.py -p /dev/ttyACM0 flash monitor
 - [Web UI](docs/web-ui.md) — UI features, i18n, theme, settings
 - [Development](docs/development.md) — build, flash, CI, contributing
 
+### Reviewing the code? Start here
+
+- `docs/architecture.md` — module map, dependencies, boot sequence, data flow
+- `main/web_server.c` — the complete HTTP surface in one `s_uris[]` route table near the top of the file (reading map in the file header)
+- `docs/api-contract.md` · `docs/config-contract.md` · `docs/at-command.md` — versioned behavior contracts shared across the MiBee Cam family
+
 ## Project Status
 
 This is a production-ready firmware with:
