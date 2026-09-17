@@ -661,7 +661,7 @@ build/spiffs.bin，含本移植与四仓 SPA 同步版）。
 - **.113 网络身份以启动日志为准**：`wifi_manager: WiFi connected, IP: ...`
   （或 `esp_netif_handlers: sta ip:`）——掉线重入/换网窗口期旧地址会暂时失联，
   找板先看这个再扫网段。
-- **ch7 拥塞窗口（GT3000 自动信道）**：busy≈75% 时段 .113 会出现 ping 100% 丢
+- **ch7 拥塞窗口（主网 AP 当前自动信道）**：busy≈75% 时段 .113 会出现 ping 100% 丢
   而 TCP 慢通、`TrafficGen errno=12`、CSI `cb_pps` 短暂归零的 TX 窘迫——自愈型
   （复位加速恢复；双板 CSI 最终都完成校准，cb≈37/286pps）。根治靠 AP 挪信道
   （用户侧动作），勿当固件回归排查。判别基准：`.119` 同窗 ping 正常。
