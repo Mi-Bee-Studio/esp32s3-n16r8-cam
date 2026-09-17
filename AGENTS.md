@@ -647,3 +647,23 @@ GET 后立即 RST（探针 0 帧×5 断连）；NVR（.30）的会话在（clien
 （原生 USB-OTG 口，PIT-044 注意 DTR/RTS）后 `idf.py -p <口> flash`，或
 短期大量重试碰运气（成功率低）。build 产物已就绪（build/mibee_cam.bin +
 build/spiffs.bin，含本移植与四仓 SPA 同步版）。
+
+## 2026-09-17 双单元运维事实 + 端口身份教训（误刷事故记录，issue #23）
+
+- **两台在线单元**：`.119`（OV3660，CH340 → `/dev/ttyUSB0`，采集器常驻口）；
+  `.113`（**实载 OV5640**，原生 USB-JTAG → `/dev/ttyACM0`，无 AT 控制台——AT 只在
+  CH340 那台的 UART0 上）。
+- **USB 刷写前必须抓启动 banner 验板型**：by-id 名 `Espressif_USB_JTAG_*` 是所有
+  S3 原生 JTAG 板共有，不是 XIAO 指纹。2026-09-17 曾据此把 seeed 固件 + 8MB 分区表
+  误刷到 .113（症状：fw 0.3.0/api 1.8 + 摄像头 init 失败——XIAO 引脚表不配 GOOUUU），
+  后用本仓镜像 USB 全量重刷恢复（16MB 分区表复原，NVS 无损）。副作用：.113 从
+  v0.1.0-test-49 直接升到当日 main，flash_viewers 移植随之落地（已开，NVS 持久）。
+- **.113 网络身份以启动日志为准**：`wifi_manager: WiFi connected, IP: ...`
+  （或 `esp_netif_handlers: sta ip:`）——掉线重入/换网窗口期旧地址会暂时失联，
+  找板先看这个再扫网段。
+- **ch7 拥塞窗口（GT3000 自动信道）**：busy≈75% 时段 .113 会出现 ping 100% 丢
+  而 TCP 慢通、`TrafficGen errno=12`、CSI `cb_pps` 短暂归零的 TX 窘迫——自愈型
+  （复位加速恢复；双板 CSI 最终都完成校准，cb≈37/286pps）。根治靠 AP 挪信道
+  （用户侧动作），勿当固件回归排查。判别基准：`.119` 同窗 ping 正常。
+- 采集器（`overnight_log.py /dev/ttyUSB0`）本日重启过一次——旧进程自 09-13 楔死
+  （USB 重枚举盲区已知坑），日志断档 4 天属正常现象。
