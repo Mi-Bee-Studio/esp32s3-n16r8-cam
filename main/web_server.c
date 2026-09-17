@@ -11,6 +11,21 @@
  * feature handlers removed.  The MJPEG stream is registered as a URI
  * handler but served asynchronously by mjpeg_streamer.c via the
  * httpd_req_async_handler_begin() API.
+ *
+ * READING MAP (keep in sync when sections move):
+ *
+ *   Route table (s_uris[]) .... every HTTP endpoint in one place, near
+ *                               the top of this file — start here to
+ *                               answer "what URI is handled where"
+ *   Helpers ................... auth (X-Password), CORS, JSON envelope
+ *   Handlers .................. one static esp_err_t *_handler() per
+ *                               endpoint, same names as the table
+ *   web_server_start() ........ httpd config + registration loop;
+ *                               ONVIF SOAP handlers register separately
+ *                               after the loop (order is significant)
+ *
+ * Behavior contracts: docs/api-contract.md (family-wide, versioned).
+ * Module map / boot order: docs/architecture.md.
  */
 
 #include "web_server.h"
@@ -51,6 +66,78 @@
 static const char *TAG = "web_server";
 
 static httpd_handle_t s_server = NULL;
+
+/* ------------------------------------------------------------------ */
+/*  Route table — the complete HTTP surface of this server, listed in  */
+/*  registration order. Handler bodies live further down in this file. */
+/*  Wildcard matching is registration-order sensitive: the GET catch-  */
+/*  all must stay LAST.                                                */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    const char    *uri;
+    httpd_method_t method;
+    esp_err_t    (*handler)(httpd_req_t *);
+} uri_entry_t;
+
+static esp_err_t static_file_handler(httpd_req_t *req);
+static esp_err_t api_status_handler(httpd_req_t *req);
+static esp_err_t api_config_get_handler(httpd_req_t *req);
+static esp_err_t api_config_post_handler(httpd_req_t *req);
+static esp_err_t api_capabilities_handler(httpd_req_t *req);
+static esp_err_t api_capture_handler(httpd_req_t *req);
+static esp_err_t api_scan_handler(httpd_req_t *req);
+static esp_err_t api_reset_handler(httpd_req_t *req);
+static esp_err_t api_reboot_handler(httpd_req_t *req);
+static esp_err_t api_csi_calibrate_handler(httpd_req_t *req);
+static esp_err_t api_auth_handler(httpd_req_t *req);
+static esp_err_t api_time_handler(httpd_req_t *req);
+static esp_err_t metrics_handler(httpd_req_t *req);
+static esp_err_t api_led_handler(httpd_req_t *req);
+static esp_err_t api_led_get_handler(httpd_req_t *req);
+static esp_err_t api_ai_handler(httpd_req_t *req);
+static esp_err_t ai_status_get_handler(httpd_req_t *req);
+static esp_err_t api_camera_get_handler(httpd_req_t *req);
+static esp_err_t api_camera_post_handler(httpd_req_t *req);
+/* OTA handlers (api_ota_handler/api_ota_info_handler/api_ota_upload_handler/
+ * api_ota_spiffs_handler) are declared in ota_updater.h — defined there too */
+static esp_err_t options_handler(httpd_req_t *req);
+
+static const uri_entry_t s_uris[] = {
+    /* Static files */
+    { "/",              HTTP_GET,     static_file_handler          },
+    /* REST API — 核心端点（契约 v1.0，四板一致） */
+    { "/api/status",    HTTP_GET,     api_status_handler           },
+    { "/api/config",    HTTP_GET,     api_config_get_handler       },
+    { "/api/config",    HTTP_POST,    api_config_post_handler      },
+    { "/api/capabilities", HTTP_GET,  api_capabilities_handler     },
+    { "/api/capture",   HTTP_GET,     api_capture_handler          },
+    { "/api/scan",      HTTP_GET,     api_scan_handler             },
+    { "/api/reset",     HTTP_POST,    api_reset_handler            },
+    { "/api/reboot",    HTTP_POST,    api_reboot_handler           },
+    { "/api/csi/calibrate", HTTP_POST, api_csi_calibrate_handler   },   /* 契约 v1.7 */
+    { "/api/auth",      HTTP_GET,     api_auth_handler             },
+    { "/api/time",      HTTP_POST,    api_time_handler             },
+    { "/metrics",       HTTP_GET,     metrics_handler              },
+    /* 能力门控端点 */
+    { "/api/led",       HTTP_POST,    api_led_handler              },
+    { "/api/led",       HTTP_GET,     api_led_get_handler          },
+    { "/api/ai",        HTTP_POST,    api_ai_handler               },
+    { "/api/ai/status", HTTP_GET,     ai_status_get_handler        },
+    { "/api/camera",    HTTP_GET,     api_camera_get_handler       },
+    { "/api/camera",    HTTP_POST,    api_camera_post_handler      },
+    /* OTA（契约 v1.1：与 seeed 同语义） */
+    { "/api/ota",       HTTP_POST,    api_ota_handler              },
+    { "/api/ota/info",  HTTP_GET,     api_ota_info_handler         },
+    { "/api/ota/upload", HTTP_POST,   api_ota_upload_handler       },
+    { "/api/ota/spiffs", HTTP_POST,   api_ota_spiffs_handler       },
+    /* CORS preflight */
+    { "/*",             HTTP_OPTIONS, options_handler              },
+    /* Catch-all static files */
+    { "/*",             HTTP_GET,     static_file_handler          },
+};
+
+#define NUM_URIS (sizeof(s_uris) / sizeof(s_uris[0]))
 
 /* ── chip_temp：S3 温度传感器（2026-09-04 API 对齐，方案同 seeed/luatos）──
  * S3 温度传感器只有固定测量档（[-10,80]/[20,100]/[50,125]/[-30,50]），请求
@@ -1363,52 +1450,6 @@ static esp_err_t metrics_handler(httpd_req_t *req)
     httpd_resp_send(req, buf, len);
     return ESP_OK;
 }
-
-/* ------------------------------------------------------------------ */
-/*  URI handler registration table                                     */
-/* ------------------------------------------------------------------ */
-
-typedef struct {
-    const char    *uri;
-    httpd_method_t method;
-    esp_err_t    (*handler)(httpd_req_t *);
-} uri_entry_t;
-
-static const uri_entry_t s_uris[] = {
-    /* Static files */
-    { "/",              HTTP_GET,     static_file_handler          },
-    /* REST API — 核心端点（契约 v1.0，四板一致） */
-    { "/api/status",    HTTP_GET,     api_status_handler           },
-    { "/api/config",    HTTP_GET,     api_config_get_handler       },
-    { "/api/config",    HTTP_POST,    api_config_post_handler      },
-    { "/api/capabilities", HTTP_GET,  api_capabilities_handler     },
-    { "/api/capture",   HTTP_GET,     api_capture_handler          },
-    { "/api/scan",      HTTP_GET,     api_scan_handler             },
-    { "/api/reset",     HTTP_POST,    api_reset_handler            },
-    { "/api/reboot",    HTTP_POST,    api_reboot_handler           },
-    { "/api/csi/calibrate", HTTP_POST, api_csi_calibrate_handler   },   /* 契约 v1.7 */
-    { "/api/auth",      HTTP_GET,     api_auth_handler             },
-    { "/api/time",      HTTP_POST,    api_time_handler             },
-    { "/metrics",       HTTP_GET,     metrics_handler              },
-    /* 能力门控端点 */
-    { "/api/led",       HTTP_POST,    api_led_handler              },
-    { "/api/led",       HTTP_GET,     api_led_get_handler          },
-    { "/api/ai",        HTTP_POST,    api_ai_handler               },
-    { "/api/ai/status", HTTP_GET,     ai_status_get_handler        },
-    { "/api/camera",    HTTP_GET,     api_camera_get_handler       },
-    { "/api/camera",    HTTP_POST,    api_camera_post_handler      },
-    /* OTA（契约 v1.1：与 seeed 同语义） */
-    { "/api/ota",       HTTP_POST,    api_ota_handler              },
-    { "/api/ota/info",  HTTP_GET,     api_ota_info_handler         },
-    { "/api/ota/upload", HTTP_POST,   api_ota_upload_handler       },
-    { "/api/ota/spiffs", HTTP_POST,   api_ota_spiffs_handler       },
-    /* CORS preflight */
-    { "/*",             HTTP_OPTIONS, options_handler              },
-    /* Catch-all static files */
-    { "/*",             HTTP_GET,     static_file_handler          },
-};
-
-#define NUM_URIS (sizeof(s_uris) / sizeof(s_uris[0]))
 
 /* ------------------------------------------------------------------ */
 /*  Public API                                                         */
