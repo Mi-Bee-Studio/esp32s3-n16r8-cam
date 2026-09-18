@@ -287,14 +287,16 @@ esp_err_t at_port_cam_res_set(int value)
 
 int at_port_cam_qual_get(int *qmin, int *qmax)
 {
-    if (qmin) *qmin = CAMERA_QUALITY_MIN;
+    /* 契约 v1.9 §5（issue #27）：min 随当前档位收紧（板级定标） */
+    if (qmin) *qmin = camera_quality_min_for(config_get_cam_framesize());
     if (qmax) *qmax = CAMERA_QUALITY_MAX;
     return config_get_cam_quality();
 }
 
 esp_err_t at_port_cam_qual_set(int value)
 {
-    if (value < CAMERA_QUALITY_MIN || value > CAMERA_QUALITY_MAX) {
+    if (value < camera_quality_min_for(config_get_cam_framesize()) ||
+        value > CAMERA_QUALITY_MAX) {
         return ESP_ERR_INVALID_ARG;
     }
     /* 本板生效语义（契约 §6）：热重配（同 AT+CAMRES 路径） */
@@ -447,7 +449,8 @@ static esp_err_t cfg_set_cam_fps(const char *v)
 static esp_err_t cfg_set_cam_quality(const char *v)
 {
     long val;
-    if (!parse_long_strict(v, &val) || val < CAMERA_QUALITY_MIN || val > CAMERA_QUALITY_MAX) {
+    if (!parse_long_strict(v, &val) ||
+        val < camera_quality_min_for(config_get_cam_framesize()) || val > CAMERA_QUALITY_MAX) {
         return ESP_ERR_INVALID_ARG;
     }
     /* 本板语义：画质变更热重配（同 AT+CAMQUAL） */

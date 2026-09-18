@@ -24,6 +24,12 @@
 #define CAMERA_QUALITY_MIN 10
 #define CAMERA_QUALITY_MAX 63
 
+/* 契约 v1.9 §5（issue #27）：画质下限随档位收紧（只紧不松）——fb 按
+ * w×h/5 分配，高档位配低 q 的码流超限截帧（.119 实测 SXGA@q10 NO-SOI
+ * 风暴，PIT-021 家族边界在高分辨率档内移）。板级定标（n16r8 实测，
+ * .119 OV3660/.113 OV5640）：≤SVGA=10、XGA/HD=12、SXGA=14。 */
+uint8_t camera_quality_min_for(uint8_t framesize);
+
 /* ── 分辨率三层上限（2026-09-04 家族统一，PIT-021 附录）──────────────
  * effective = min(传感器上限, 板级实测上限, 运行时 fb 预算)，刻度是
  * esp32-camera framesize_t 原始枚举（VGA=10 … 5MP=24）：
