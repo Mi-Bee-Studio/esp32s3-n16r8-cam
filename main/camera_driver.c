@@ -120,6 +120,13 @@ static int sensor_max_framesize(void)
     return CAMERA_RES_BOARD_MAX;
 }
 
+uint8_t camera_quality_min_for(uint8_t framesize)
+{
+    if (framesize >= 14) return 14;              /* SXGA+（本板上限） */
+    if (framesize >= 12) return 12;              /* XGA / HD */
+    return CAMERA_QUALITY_MIN;                   /* ≤SVGA 家族底 */
+}
+
 int camera_get_effective_max_res(void)
 {
     int sensor_cap = sensor_max_framesize();

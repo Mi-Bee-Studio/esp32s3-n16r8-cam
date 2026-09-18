@@ -319,6 +319,18 @@ static esp_err_t static_file_handler(httpd_req_t *req)
 
     FILE *f = fopen(filepath, "r");
     if (!f) {
+        /* 404 带来源对端（issue ai#8：设备侧只记 404 不记 URI/IP，NVR 排障
+         * 无法对表）——仅记录，不改变响应语义 */
+        char peer[16] = "?";
+        int fd = httpd_req_to_sockfd(req);
+        if (fd >= 0) {
+            struct sockaddr_in sa;
+            socklen_t sl = sizeof(sa);
+            if (lwip_getpeername(fd, (struct sockaddr *)&sa, &sl) == 0) {
+                strlcpy(peer, inet_ntoa(sa.sin_addr), sizeof(peer));
+            }
+        }
+        ESP_LOGW(TAG, "404 %s from %s", uri, peer);
         httpd_resp_send_404(req);
         return ESP_FAIL;
     }
@@ -616,11 +628,16 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
         /* —— 契约 §4 数值域校验（越界 400）—— */
         if (strcmp(key, "cam_quality") == 0) {
             /* 画质边界（2026-09-04，驱动不变量）：q<10 撞 esp32-camera 的
-             * w*h/5 JPEG fb 预算产生截断帧，PIT-021 */
-            if (val < CAMERA_QUALITY_MIN || val > CAMERA_QUALITY_MAX) {
-                char msg[64];
-                snprintf(msg, sizeof(msg), "cam_quality out of range (%d-%d)",
-                         CAMERA_QUALITY_MIN, CAMERA_QUALITY_MAX);
+             * w*h/5 JPEG fb 预算产生截断帧，PIT-021。v1.9（issue #27）：
+             * 下限随目标档位收紧（同 body 带新档位则按新档位算） */
+            cJSON *fs_item = cJSON_GetObjectItem(json, "cam_framesize");
+            uint8_t eff_fs = (fs_item && cJSON_IsNumber(fs_item))
+                ? (uint8_t)fs_item->valueint : config_get_cam_framesize();
+            uint8_t qmin = camera_quality_min_for(eff_fs);
+            if (val < qmin || val > CAMERA_QUALITY_MAX) {
+                char msg[80];
+                snprintf(msg, sizeof(msg), "cam_quality out of range (%d-%d at this resolution)",
+                         qmin, CAMERA_QUALITY_MAX);
                 cJSON_Delete(json);
                 return json_error(req, msg, HTTPD_400_BAD_REQUEST);
             }
@@ -917,17 +934,19 @@ static esp_err_t api_capabilities_handler(httpd_req_t *req)
 /*  GET /camera                                                         */
 /* ------------------------------------------------------------------ */
 
-static esp_err_t api_camera_get_handler(httpd_req_t *req)
+/* 当前相机状态 JSON（GET 与 POST 共用；POST 追加 ignored 键集） */
+static cJSON *camera_state_json(void)
 {
     cJSON *data = cJSON_CreateObject();
     if (!data) {
-        return json_error(req, "Out of memory", HTTPD_500_INTERNAL_SERVER_ERROR);
+        return NULL;
     }
 
     cJSON_AddNumberToObject(data, "cam_framesize",  config_get_cam_framesize());
     cJSON_AddNumberToObject(data, "cam_quality",    config_get_cam_quality());
-    /* 契约扩展（2026-09-04）：画质滑杆边界由板端声明，前端据此钳制输入 */
-    cJSON_AddNumberToObject(data, "quality_min",    CAMERA_QUALITY_MIN);
+    /* 契约扩展（2026-09-04）：画质滑杆边界由板端声明，前端据此钳制输入。
+     * v1.9（issue #27）：min 随当前档位收紧（板级定标），POST 校验同源 */
+    cJSON_AddNumberToObject(data, "quality_min",    camera_quality_min_for(config_get_cam_framesize()));
     cJSON_AddNumberToObject(data, "quality_max",    CAMERA_QUALITY_MAX);
     cJSON_AddNumberToObject(data, "cam_brightness", config_get_cam_brightness());
     cJSON_AddNumberToObject(data, "cam_contrast",   config_get_cam_contrast());
@@ -960,6 +979,15 @@ static esp_err_t api_camera_get_handler(httpd_req_t *req)
         cJSON_AddStringToObject(data, "res_cap_source", camera_res_cap_source());
     }
 
+    return data;
+}
+
+static esp_err_t api_camera_get_handler(httpd_req_t *req)
+{
+    cJSON *data = camera_state_json();
+    if (!data) {
+        return json_error(req, "Out of memory", HTTPD_500_INTERNAL_SERVER_ERROR);
+    }
     return json_ok(req, data);
 }
 
@@ -1015,14 +1043,16 @@ static esp_err_t api_camera_post_handler(httpd_req_t *req)
         need_reinit = true;
     }
 
-    /* cam_quality */
+    /* cam_quality — v1.9（issue #27）：下限按目标档位收紧（帧尺寸键
+     * 先于本键解析，new_framesize 已含本次切换目标） */
     item = cJSON_GetObjectItem(json, "cam_quality");
     if (item && cJSON_IsNumber(item)) {
         int val = item->valueint;
-        if (val < CAMERA_QUALITY_MIN || val > CAMERA_QUALITY_MAX) {
-            char msg[64];
-            snprintf(msg, sizeof(msg), "cam_quality out of range (%d-%d)",
-                     CAMERA_QUALITY_MIN, CAMERA_QUALITY_MAX);
+        uint8_t qmin = camera_quality_min_for(new_framesize);
+        if (val < qmin || val > CAMERA_QUALITY_MAX) {
+            char msg[80];
+            snprintf(msg, sizeof(msg), "cam_quality out of range (%d-%d at this resolution)",
+                     qmin, CAMERA_QUALITY_MAX);
             cJSON_Delete(json);
             return json_error(req, msg, HTTPD_400_BAD_REQUEST);
         }
@@ -1080,10 +1110,36 @@ static esp_err_t api_camera_post_handler(httpd_req_t *req)
         }
     }
 
+    /* 未知键回显（契约 v1.9 §5，issue #27）：静默 ok:true 曾让"quality"
+     * 这类裸键的拼写错误排障半天——现在点名 WARN + 响应带 ignored 键集 */
+    static const char *known_keys[] = {
+        "cam_framesize", "cam_quality", "cam_brightness", "cam_contrast",
+        "cam_saturation", "cam_sharpness", "cam_hmirror", "cam_vflip",
+    };
+    cJSON *ignored = cJSON_CreateArray();
+    for (cJSON *child = json->child; child; child = child->next) {
+        if (!child->string) continue;   /* 数组体：成员无名，跳过（防 strcmp(NULL)） */
+        bool known = false;
+        for (size_t i = 0; i < sizeof(known_keys) / sizeof(known_keys[0]); i++) {
+            if (strcmp(child->string, known_keys[i]) == 0) { known = true; break; }
+        }
+        if (!known) cJSON_AddItemToArray(ignored, cJSON_CreateString(child->string));
+    }
+    if (cJSON_GetArraySize(ignored) > 0) {
+        char *names = cJSON_PrintUnformatted(ignored);
+        ESP_LOGW(TAG, "POST /api/camera ignored unknown keys: %s", names ? names : "?");
+        free(names);
+    }
     cJSON_Delete(json);
 
-    /* Return current state (reuses GET handler) */
-    return api_camera_get_handler(req);
+    cJSON *data = camera_state_json();
+    if (!data) {
+        cJSON_Delete(ignored);
+        return json_error(req, "Out of memory", HTTPD_500_INTERNAL_SERVER_ERROR);
+    }
+    cJSON_AddItemToObject(data, "ignored", ignored);
+
+    return json_ok(req, data);
 }
 
 /* ------------------------------------------------------------------ */
