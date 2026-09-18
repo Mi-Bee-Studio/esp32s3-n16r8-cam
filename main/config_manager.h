@@ -21,7 +21,7 @@
 /* 家族配置契约 v1.0（docs/config-contract.md §1）：mibee_cfg 逐键 NVS 的
  * 家族 schema 版本键值（u16）。新增键 = 缺键取默认；改名/语义变更须
  * bump 并在契约 §8 登记（含 lazy 迁移步骤）。 */
-#define CONFIG_SCHEMA_VERSION 1
+#define CONFIG_SCHEMA_VERSION 2   /* v2.0：web_password/rtsp_user/rtsp_pass 删除 */
 
 #ifdef __cplusplus
 extern "C" {
@@ -43,7 +43,7 @@ esp_err_t config_load(void);
  * @param  key   One of: wifi_ssid, wifi_pass, wifi_ssid_2, wifi_pass_2,
  *               cam_framesize, cam_quality, cam_fps, timezone, ap_fallback,
  *               xclk_freq_mhz, ai_face_en, ai_motion_en, ai_qr_en,
- *               rtsp_user, rtsp_pass, onvif_enable,
+ *               onvif_enable,
  *               cam_brightness, cam_contrast, cam_saturation, cam_sharpness,
  *               cam_hmirror, cam_vflip
  *               (NVS key names per contract §3; JSON name allow_ap_fallback
@@ -91,9 +91,6 @@ uint8_t     config_get_cam_fps(void);       /* 1-30，default 15（契约 §3.1�
 bool        config_get_ai_face_enable(void);
 bool        config_get_ai_motion_enable(void);
 bool        config_get_ai_qr_enable(void);
-const char *config_get_rtsp_user(void);
-const char *config_get_rtsp_pass(void);
-const char *config_get_web_password(void);
 bool        config_get_onvif_enable(void);
 bool        config_get_onvif_events(void);   /* 契约 v1.5：MotionAlarm 生成开关 */
 /* CSI 调参键族（契约 v1.7；threshold 换算 float 0=auto 或 0.05-1.0） */

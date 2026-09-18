@@ -17,7 +17,7 @@
  *   Route table (s_uris[]) .... every HTTP endpoint in one place, near
  *                               the top of this file — start here to
  *                               answer "what URI is handled where"
- *   Helpers ................... auth (X-Password), CORS, JSON envelope
+ *   Helpers ................... CORS, JSON envelope (无设备级认证，契约 v1.9)
  *   Handlers .................. one static esp_err_t *_handler() per
  *                               endpoint, same names as the table
  *   web_server_start() ........ httpd config + registration loop;
@@ -90,7 +90,6 @@ static esp_err_t api_scan_handler(httpd_req_t *req);
 static esp_err_t api_reset_handler(httpd_req_t *req);
 static esp_err_t api_reboot_handler(httpd_req_t *req);
 static esp_err_t api_csi_calibrate_handler(httpd_req_t *req);
-static esp_err_t api_auth_handler(httpd_req_t *req);
 static esp_err_t api_time_handler(httpd_req_t *req);
 static esp_err_t metrics_handler(httpd_req_t *req);
 static esp_err_t api_led_handler(httpd_req_t *req);
@@ -116,7 +115,6 @@ static const uri_entry_t s_uris[] = {
     { "/api/reset",     HTTP_POST,    api_reset_handler            },
     { "/api/reboot",    HTTP_POST,    api_reboot_handler           },
     { "/api/csi/calibrate", HTTP_POST, api_csi_calibrate_handler   },   /* 契约 v1.7 */
-    { "/api/auth",      HTTP_GET,     api_auth_handler             },
     { "/api/time",      HTTP_POST,    api_time_handler             },
     { "/metrics",       HTTP_GET,     metrics_handler              },
     /* 能力门控端点 */
@@ -252,71 +250,6 @@ char *read_body(httpd_req_t *req, size_t max_len)
     return buf;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Authentication helpers                                             */
-/* ------------------------------------------------------------------ */
-
-/* config_get_web_password() will be added to config_manager.c */
-extern const char *config_get_web_password(void);
-
-static bool check_auth(httpd_req_t *req)
-{
-    const char *stored_pass = config_get_web_password();
-    /* If no password is set, allow access (first-time setup) */
-    if (!stored_pass || stored_pass[0] == '\0') {
-        return true;
-    }
-    
-    /* Check X-Password header */
-    char password[128];
-    size_t password_len = sizeof(password) - 1;
-    esp_err_t ret = httpd_req_get_hdr_value_str(req, "X-Password", password, password_len);
-    if (ret != ESP_OK) {
-        return false;
-    }
-    password[password_len] = '\0';
-    
-    return strcmp(password, stored_pass) == 0;
-}
-
-static esp_err_t require_auth(httpd_req_t *req)
-{
-    const char *stored_pass = config_get_web_password();
-    
-    /* State A: No password set — only POST /api/config with web_password field allowed */
-    if (!stored_pass || stored_pass[0] == '\0') {
-        return json_error(req, "SET_PASSWORD_FIRST", HTTPD_401_UNAUTHORIZED);
-    }
-    
-    /* State B: Password is set — require X-Password header to match */
-    char password[128];
-    size_t password_len = sizeof(password) - 1;
-    esp_err_t ret = httpd_req_get_hdr_value_str(req, "X-Password", password, password_len);
-    if (ret != ESP_OK) {
-        return json_error(req, "Unauthorized", HTTPD_401_UNAUTHORIZED);
-    }
-    password[password_len] = '\0';
-
-    if (strcmp(password, stored_pass) != 0) {
-        return json_error(req, "Unauthorized", HTTPD_401_UNAUTHORIZED);
-    }
-    
-    return ESP_OK;
-}
-
-/** @brief 公共鉴权入口（OTA 等模块复用）：状态A返回 SET_PASSWORD_FIRST，状态B校验 X-Password */
-esp_err_t web_server_check_auth(httpd_req_t *req)
-{
-    const char *stored_pass = config_get_web_password();
-    if (!stored_pass || stored_pass[0] == '\0') {
-        return json_error(req, "SET_PASSWORD_FIRST", HTTPD_401_UNAUTHORIZED);
-    }
-    if (!check_auth(req)) {
-        return json_error(req, "Unauthorized", HTTPD_401_UNAUTHORIZED);
-    }
-    return ESP_OK;
-}
-
 esp_err_t json_error_status(httpd_req_t *req, const char *msg, const char *status_line)
 {
     char json[256];
@@ -336,7 +269,7 @@ static void set_cors_headers(httpd_req_t *req)
 {
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Content-Type, X-Password");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Content-Type");
     httpd_resp_set_hdr(req, "Access-Control-Max-Age", "86400");
 }
 
@@ -554,12 +487,6 @@ static esp_err_t api_config_get_handler(httpd_req_t *req)
     cJSON_AddBoolToObject(data,   "ai_face_en",       config_get_ai_face_enable());
     cJSON_AddBoolToObject(data,   "ai_motion_en",     config_get_ai_motion_enable());
     cJSON_AddBoolToObject(data,   "ai_qr_en",         config_get_ai_qr_enable());
-    cJSON_AddStringToObject(data, "rtsp_user",        config_get_rtsp_user());
-    if (config_get_rtsp_pass() && config_get_rtsp_pass()[0]) {
-        cJSON_AddStringToObject(data, "rtsp_pass", "****");
-    } else {
-        cJSON_AddStringToObject(data, "rtsp_pass", "");
-    }
     cJSON_AddBoolToObject(data,   "onvif_enable",     config_get_onvif_enable());
     cJSON_AddBoolToObject(data,   "onvif_events",     config_get_onvif_events());   /* 契约 v1.5 */
     /* CSI 调参键族（契约 v1.7；CSI-off 亦有默认值） */
@@ -598,25 +525,6 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
         return json_error(req, "Invalid JSON", HTTPD_400_BAD_REQUEST);
     }
     
-    /* Auth state machine */
-    const char *stored_pass = config_get_web_password();
-    bool password_empty = !stored_pass || stored_pass[0] == '\0';
-    
-    if (password_empty) {
-        /* State A: only allow if body contains web_password field */
-        cJSON *pw = cJSON_GetObjectItem(json, "web_password");
-        if (!pw || !cJSON_IsString(pw) || !pw->valuestring[0]) {
-            cJSON_Delete(json);
-            return json_error(req, "SET_PASSWORD_FIRST", HTTPD_401_UNAUTHORIZED);
-        }
-        /* Fall through — config_set will save the password */
-    } else {
-        /* State B: require X-Password header */
-        if (!check_auth(req)) {
-            cJSON_Delete(json);
-            return json_error(req, "unauthorized", HTTPD_401_UNAUTHORIZED);
-        }
-    }
     /* Iterate over known config keys and apply via config_set()
      * 白名单 = 契约 §3 JSON 字段名；校验矩阵 = 契约 §4（越界一律 400）。 */
     cJSON *item;
@@ -627,10 +535,10 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
     const float prev_csi_thr = config_get_csi_threshold();
     const char *known_keys[] = {
         "wifi_ssid", "wifi_pass", "wifi_ssid_2", "wifi_pass_2",
-        "web_password", "device_name", "timezone", "allow_ap_fallback",
+        "device_name", "timezone", "allow_ap_fallback",
         "cam_framesize", "cam_fps", "cam_quality", "xclk_freq_mhz",
         "ai_face_en", "ai_motion_en", "ai_qr_en",
-        "rtsp_user", "rtsp_pass", "onvif_enable", "onvif_events",
+        "onvif_enable", "onvif_events",
         "cam_brightness", "cam_contrast", "cam_saturation", "cam_sharpness",
         "cam_hmirror", "cam_vflip",
         "csi_enabled", "csi_threshold", "csi_on_hits", "csi_off_hits",
@@ -683,11 +591,6 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
                          key, (unsigned)(maxlen - 1));
                 cJSON_Delete(json);
                 return json_error(req, msg, HTTPD_400_BAD_REQUEST);
-            }
-            /* 契约 v1.1：拒绝空/过短密码 */
-            if (strcmp(key, "web_password") == 0 && vlen < 6) {
-                cJSON_Delete(json);
-                return json_error(req, "web_password must be at least 6 characters", HTTPD_400_BAD_REQUEST);
             }
             if (config_set(cfg_key, val) == ESP_OK) {
                 updated++;
@@ -823,11 +726,6 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
 
 static esp_err_t api_led_handler(httpd_req_t *req)
 {
-    esp_err_t ret = require_auth(req);
-    if (ret != ESP_OK) {
-        return ret;
-    }
-    
     char *body = read_body(req, 256);
     if (!body) {
         return json_error(req, "Empty or too large body", HTTPD_400_BAD_REQUEST);
@@ -871,11 +769,6 @@ static esp_err_t api_led_handler(httpd_req_t *req)
 
 static esp_err_t api_ai_handler(httpd_req_t *req)
 {
-    esp_err_t ret = require_auth(req);
-    if (ret != ESP_OK) {
-        return ret;
-    }
-    
     char *body = read_body(req, 512);
     if (!body) {
         return json_error(req, "Empty or too large body", HTTPD_400_BAD_REQUEST);
@@ -996,7 +889,7 @@ static esp_err_t api_capabilities_handler(httpd_req_t *req)
     }
     
     /* 契约 v1.0：12 个布尔能力位 + api_version/wifi_scan（见 docs/api-contract.md） */
-    cJSON_AddStringToObject(data, "api_version", "1.8");
+    cJSON_AddStringToObject(data, "api_version", "1.9");
     cJSON_AddBoolToObject(data, "wifi_scan", true);
     cJSON_AddBoolToObject(data, "ai",        true);   /* Has AI pipeline */
     cJSON_AddBoolToObject(data, "sd",        false);  /* No SD card */
@@ -1076,11 +969,6 @@ static esp_err_t api_camera_get_handler(httpd_req_t *req)
 
 static esp_err_t api_camera_post_handler(httpd_req_t *req)
 {
-    esp_err_t ret = require_auth(req);
-    if (ret != ESP_OK) {
-        return ret;
-    }
-    
     char *body = read_body(req, 2048);
     if (!body) {
         return json_error(req, "Empty or too large body", HTTPD_400_BAD_REQUEST);
@@ -1277,14 +1165,11 @@ static esp_err_t api_scan_handler(httpd_req_t *req)
 }
 
 /* ------------------------------------------------------------------ */
-/*  POST /api/reset · POST /api/reboot · GET /api/auth                 */
+/*  POST /api/reset · POST /api/reboot                                  */
 /* ------------------------------------------------------------------ */
 
 static esp_err_t api_reset_handler(httpd_req_t *req)
 {
-    esp_err_t ret = require_auth(req);
-    if (ret != ESP_OK) return ret;
-
     ESP_LOGW(TAG, "Factory reset requested via web API");
     config_reset();
 
@@ -1298,9 +1183,6 @@ static esp_err_t api_reset_handler(httpd_req_t *req)
 
 static esp_err_t api_reboot_handler(httpd_req_t *req)
 {
-    esp_err_t ret = require_auth(req);
-    if (ret != ESP_OK) return ret;
-
     cJSON *data = cJSON_CreateObject();
     cJSON_AddStringToObject(data, "message", "Rebooting...");
     json_ok(req, data);
@@ -1314,9 +1196,6 @@ static esp_err_t api_reboot_handler(httpd_req_t *req)
  *  运行时未就绪 503），背景执行，进度经 csi.calibrating / 串口日志。 */
 static esp_err_t api_csi_calibrate_handler(httpd_req_t *req)
 {
-    esp_err_t ret = require_auth(req);
-    if (ret != ESP_OK) return ret;
-
     esp_err_t cr = csi_motion_recalibrate();
     if (cr == ESP_ERR_NOT_SUPPORTED) {
         return json_error(req, "CSI sensing not built (csi_motion capability absent)",
@@ -1330,34 +1209,12 @@ static esp_err_t api_csi_calibrate_handler(httpd_req_t *req)
     return json_ok(req, data);
 }
 
-static esp_err_t api_auth_handler(httpd_req_t *req)
-{
-    const char *stored = config_get_web_password();
-
-    if (!stored || stored[0] == '\0') {
-        cJSON *data = cJSON_CreateObject();
-        cJSON_AddBoolToObject(data, "auth", true);
-        cJSON_AddBoolToObject(data, "password_set", false);
-        return json_ok(req, data);
-    }
-    if (check_auth(req)) {
-        cJSON *data = cJSON_CreateObject();
-        cJSON_AddBoolToObject(data, "auth", true);
-        cJSON_AddBoolToObject(data, "password_set", true);
-        return json_ok(req, data);
-    }
-    return json_error(req, "Unauthorized", HTTPD_401_UNAUTHORIZED);
-}
-
 /* ------------------------------------------------------------------ */
 /*  POST /api/time — 手动设置系统时间                                   */
 /* ------------------------------------------------------------------ */
 
 static esp_err_t api_time_handler(httpd_req_t *req)
 {
-    esp_err_t ret = require_auth(req);
-    if (ret != ESP_OK) return ret;
-
     char *body = read_body(req, 256);
     if (!body) return json_error(req, "Empty body", HTTPD_400_BAD_REQUEST);
     cJSON *json = cJSON_Parse(body);

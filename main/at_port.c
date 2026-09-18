@@ -318,10 +318,6 @@ void at_port_status_extra(void (*emit)(const char *name, const char *value))
              ai_is_enabled(AI_FEATURE_QR_DECODE) ? "on" : "off");
     emit("ai", buf);
 
-    /* RTSP 鉴权用户（密码红线：不回显；写经 RTSPPASS=/CFGSET） */
-    snprintf(buf, sizeof(buf), "user=%s", config_get_rtsp_user());
-    emit("rtsp", buf);
-
     /* 双网络：当前槽位 + 备用网 SSID（旧 AT+INFO 的 Backup/Active 行） */
     emit("net", wifi_manager_active_net());
     const char *ssid2 = config_get_wifi_ssid_2();
@@ -354,7 +350,6 @@ static void cfg_get_device_name(char *buf, size_t len) { snprintf(buf, len, "%s"
 static void cfg_get_wifi_ssid(char *buf, size_t len)   { snprintf(buf, len, "%s", config_get_wifi_ssid()); }
 static void cfg_get_wifi_ssid_2(char *buf, size_t len) { snprintf(buf, len, "%s", config_get_wifi_ssid_2()); }
 static void cfg_get_timezone(char *buf, size_t len)    { snprintf(buf, len, "%s", config_get_timezone()); }
-static void cfg_get_rtsp_user(char *buf, size_t len)   { snprintf(buf, len, "%s", config_get_rtsp_user()); }
 static void cfg_get_cam_framesize(char *buf, size_t len) { snprintf(buf, len, "%u", (unsigned)config_get_cam_framesize()); }
 static void cfg_get_cam_fps(char *buf, size_t len)     { snprintf(buf, len, "%u", (unsigned)config_get_cam_fps()); }
 static void cfg_get_cam_quality(char *buf, size_t len) { snprintf(buf, len, "%u", (unsigned)config_get_cam_quality()); }
@@ -416,13 +411,6 @@ static esp_err_t cfg_set_wifi_ssid_2(const char *v)
 static esp_err_t cfg_set_wifi_pass_2(const char *v)
 {
     return cfg_set_str_field("wifi_pass_2", v);
-}
-static esp_err_t cfg_set_web_password(const char *v)
-{
-    if (strlen(v) < 6 || !cfg_str_fits("web_password", v)) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    return cfg_write("web_password", v);
 }
 static esp_err_t cfg_set_timezone(const char *v)
 {
@@ -596,20 +584,6 @@ static esp_err_t cfg_set_ai_qr(const char *v)
 {
     return cfg_set_ai_field("ai_qr_en", AI_FEATURE_QR_DECODE, v);
 }
-static esp_err_t cfg_set_rtsp_user(const char *v)
-{
-    if (!v[0]) return ESP_ERR_INVALID_ARG;
-    return cfg_set_str_field("rtsp_user", v);
-}
-static esp_err_t cfg_set_rtsp_pass(const char *v)
-{
-    /* secret 只写：非空、≤64（RTSP digest 空 pass 会让鉴权拒绝所有会话） */
-    if (!v[0] || strlen(v) > 64) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    return cfg_write("rtsp_pass", v);
-}
-
 /* 白名单表（get 仅非 secret 字段；set 含 secret 写入；名字 = 契约 JSON 名） */
 static const at_cfg_field_t s_cfg_fields[] = {
     { "device_name",      AT_CFG_STR, false, cfg_get_device_name,  cfg_set_device_name },
@@ -617,7 +591,6 @@ static const at_cfg_field_t s_cfg_fields[] = {
     { "wifi_pass",        AT_CFG_STR, true,  NULL,                 cfg_set_wifi_pass },
     { "wifi_ssid_2",      AT_CFG_STR, false, cfg_get_wifi_ssid_2,  cfg_set_wifi_ssid_2 },
     { "wifi_pass_2",      AT_CFG_STR, true,  NULL,                 cfg_set_wifi_pass_2 },
-    { "web_password",     AT_CFG_STR, true,  NULL,                 cfg_set_web_password },
     { "timezone",         AT_CFG_STR, false, cfg_get_timezone,     cfg_set_timezone },
     { "cam_framesize",    AT_CFG_U8,  false, cfg_get_cam_framesize, cfg_set_cam_framesize },
     { "cam_fps",          AT_CFG_U8,  false, cfg_get_cam_fps,      cfg_set_cam_fps },
@@ -641,8 +614,6 @@ static const at_cfg_field_t s_cfg_fields[] = {
     { "ai_face_en",       AT_CFG_U8,  false, cfg_get_ai_face,       cfg_set_ai_face },
     { "ai_motion_en",     AT_CFG_U8,  false, cfg_get_ai_motion,     cfg_set_ai_motion },
     { "ai_qr_en",         AT_CFG_U8,  false, cfg_get_ai_qr,         cfg_set_ai_qr },
-    { "rtsp_user",        AT_CFG_STR, false, cfg_get_rtsp_user,     cfg_set_rtsp_user },
-    { "rtsp_pass",        AT_CFG_STR, true,  NULL,                  cfg_set_rtsp_pass },
 };
 
 const at_cfg_field_t *at_port_cfg_fields(int *count)
@@ -806,32 +777,6 @@ static esp_err_t ext_led(const char *cmd)
     return ESP_OK;
 }
 
-/* RTSPPASS：RTSP digest 密码写（secret，只写不读；≤64 字符） */
-static esp_err_t ext_rtsppass(const char *cmd)
-{
-    cmd += strlen("RTSPPASS");
-    if (cmd[0] == '?') {
-        ext_err("write-only field");
-        return ESP_OK;
-    }
-    if (cmd[0] != '=' || !cmd[1]) {
-        ext_err("usage: AT+RTSPPASS=pass");
-        return ESP_OK;
-    }
-    const char *pass = cmd + 1;
-    if (strlen(pass) > 64) {
-        ext_err("pass too long (max 64)");
-        return ESP_OK;
-    }
-    esp_err_t ret = cfg_write("rtsp_pass", pass);
-    if (ret != ESP_OK) {
-        ext_err("save failed");
-        return ESP_OK;
-    }
-    ext_ok();   /* 红线 §3：不回显 */
-    return ESP_OK;
-}
-
 /* CAMCAP：拍一帧报告尺寸（承袭旧 AT+CAMCAP） */
 static esp_err_t ext_camcap(const char *cmd)
 {
@@ -934,7 +879,6 @@ static const at_ext_cmd_t s_ext_cmds[] = {
     { "AIQR",     "AIQR? | AIQR=on/off",              ext_aiqr     },
     { "WIFI2",    "WIFI2? | WIFI2=ssid,pass (empty ssid clears)", ext_wifi2 },
     { "LED",      "LED? | LED=n (0-100 percent)",     ext_led      },
-    { "RTSPPASS", "RTSPPASS=pass (write-only)",       ext_rtsppass },
     { "CAMCAP",   "capture one frame, report size",   ext_camcap   },
 };
 

@@ -8,11 +8,11 @@
  * Single MJPEG video track over RTP/UDP (or TCP-interleaved with espp/rtsp
  * patches from patches/espp__rtsp/).
  *
- * Digest authentication configured via config_get_rtsp_user() and
- * config_get_rtsp_pass().
+ * No authentication (contract v1.9): device-level passwords removed
+ * family-wide; the RTSP stream is open on the trusted LAN.
  *
  * espp/rtsp v1.1.3 native API:
- *   espp::RtspServer, espp::MjpegPacketizer, add_track, .auth_password
+ *   espp::RtspServer, espp::MjpegPacketizer, add_track
  *
  * NO audio track — the board has no microphone.
  */
@@ -106,11 +106,11 @@ esp_err_t rtsp_start(void)
     }
 
     const char *ip = wifi_manager_get_ip();
-    const char *user = config_get_rtsp_user();
-    const char *pass = config_get_rtsp_pass();
 
     ESP_LOGI(TAG, "Creating RTSP server on %s:%d", ip, RTSP_PORT);
 
+    /* 契约 v1.9：不配置 auth_username/auth_password——espp 会话层空用户名
+     * 即免认证（check_auth 直接放行），digest 质询不再发生 */
     s_server = std::make_unique<espp::RtspServer>(espp::RtspServer::Config{
         .server_address = ip,
         .port = RTSP_PORT,
@@ -120,9 +120,9 @@ esp_err_t rtsp_start(void)
         .accept_task_stack_size_bytes = 4096,
         .session_task_stack_size_bytes = 8192,
         .control_task_stack_size_bytes = 8192,
-        .auth_username = (user && user[0]) ? user : "admin",
-        .auth_password = (pass && pass[0]) ? pass : "mibeecam2026",
-        .auth_realm = "MiBee Cam",
+        .auth_username = "",   /* 空 = 会话层免认证（espp check_auth 直接放行） */
+        .auth_password = "",
+        .auth_realm = "",
     });
 
     /* Track 0 — MJPEG video (payload type 26, RFC 2435) */
@@ -139,8 +139,7 @@ esp_err_t rtsp_start(void)
 
     /* Refresh IP string in case WiFi connected recently */
     ip = wifi_manager_get_ip();
-    ESP_LOGI(TAG, "RTSP server initialized: rtsp://%s@%s:%d%s",
-             user, ip, RTSP_PORT, RTSP_PATH);
+    ESP_LOGI(TAG, "RTSP server initialized: rtsp://%s:%d%s", ip, RTSP_PORT, RTSP_PATH);
 
     /* Start the RTSP server */
     if (!s_server->start()) {
@@ -193,12 +192,10 @@ esp_err_t rtsp_stop(void)
 
 const char *rtsp_get_url(void)
 {
-    static char buf[128];
-    snprintf(buf, sizeof(buf), "rtsp://%s:%s@%s:%d%s",
-             config_get_rtsp_user(),
-             config_get_rtsp_pass(),
-             wifi_manager_get_ip(),
-             RTSP_PORT,
-             RTSP_PATH);
+    /* 契约 v1.9：URL 不再内嵌凭据（原实现把明文 user:pass 交给 ONVIF
+     * GetStreamUri 的未认证 SOAP 客户端并打进启动日志——随密码移除消灭） */
+    static char buf[64];
+    snprintf(buf, sizeof(buf), "rtsp://%s:%d%s",
+             wifi_manager_get_ip(), RTSP_PORT, RTSP_PATH);
     return buf;
 }
