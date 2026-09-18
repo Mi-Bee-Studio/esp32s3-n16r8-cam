@@ -47,13 +47,11 @@
 #define NVS_NAMESPACE  "mibee_cfg"
 #define TAG            "config"
 #define KEY_SCHEMA_VER "schema_ver"   /* 契约 §1 家族版本键（u16） */
-#define KEY_PW_SEED    "pw_seed_v1"   /* 契约 v1.1 密码一次性种子标记 */
 
 /* NVS 键名 ≤15 字符（NVS 硬限制）——所有键字面量构建期断言（契约 §1，
  * PIT-022：超长键曾使整个 config_save() 失败） */
 #define KEY_ASSERT(k) _Static_assert(sizeof(k) <= 16, "NVS key >15 chars: " k)
 KEY_ASSERT("schema_ver");
-KEY_ASSERT("pw_seed_v1");
 KEY_ASSERT("wifi_ssid");
 KEY_ASSERT("wifi_pass");
 KEY_ASSERT("wifi_ssid_2");
@@ -61,7 +59,6 @@ KEY_ASSERT("wifi_pass_2");
 KEY_ASSERT("device_name");
 KEY_ASSERT("timezone");
 KEY_ASSERT("ap_fallback");
-KEY_ASSERT("web_password");
 KEY_ASSERT("cam_framesize");
 KEY_ASSERT("cam_fps");
 KEY_ASSERT("cam_quality");
@@ -79,8 +76,6 @@ KEY_ASSERT("flash_viewers");
 KEY_ASSERT("ai_face_en");
 KEY_ASSERT("ai_motion_en");
 KEY_ASSERT("ai_qr_en");
-KEY_ASSERT("rtsp_user");
-KEY_ASSERT("rtsp_pass");
 KEY_ASSERT("cam_brightness");
 KEY_ASSERT("cam_contrast");
 KEY_ASSERT("cam_saturation");
@@ -89,9 +84,6 @@ KEY_ASSERT("xclk_freq_mhz");
 /* 契约对齐前的存量键名（lazy 迁移读取用，见 migrate_lazy_legacy_keys） */
 KEY_ASSERT("ai_face_enable");
 KEY_ASSERT("ai_qr_enable");
-
-/* 契约 v1.1：家族统一默认管理密码（公开默认 mibeecam2026，本地可在 gitignored sdkconfig 覆盖） */
-#define DEFAULT_WEB_PASSWORD CONFIG_MIBEE_CAM_DEFAULT_WEB_PASSWORD
 
 /* ------------------------------------------------------------------ */
 /*  Internal state                                                     */
@@ -110,9 +102,6 @@ typedef struct {
     bool    ai_face_enable;
     bool    ai_motion_enable;
     bool    ai_qr_enable;
-    char    rtsp_user[33];
-    char    rtsp_pass[65];     /* 契约 §3.2：str≤64（原 33 是漂移，对齐） */
-    char    web_password[65];
     bool    onvif_enable;
     bool    onvif_events;   /* 契约 v1.5：ONVIF MotionAlarm 生成开关（默认关） */
     /* CSI 感知调参键族（契约 v1.7 §3.2）。threshold 以百分刻度 u8 持久化
@@ -153,9 +142,6 @@ static const config_t s_defaults = {
     .ai_face_enable  = true,
     .ai_motion_enable = true,
     .ai_qr_enable    = true,
-    .rtsp_user       = "admin",
-    .rtsp_pass       = "mibeecam2026",   /* 2026-09-05 轮换：对外公开默认统一 mibeecam2026 */
-    .web_password    = DEFAULT_WEB_PASSWORD,   /* 契约 v1.1 家族统一默认 */
     .onvif_enable    = true,
     .onvif_events    = false,
     .csi_enabled     = true,
@@ -218,9 +204,6 @@ static const key_entry_t s_keys[] = {
     { "ai_face_en",      TYPE_U8,     OFF_U8(ai_face_enable)   },
     { "ai_motion_en",    TYPE_U8,     OFF_U8(ai_motion_enable) },
     { "ai_qr_en",        TYPE_U8,     OFF_U8(ai_qr_enable)     },
-    { "rtsp_user",       TYPE_STRING, OFF_STR(rtsp_user)       },
-    { "rtsp_pass",       TYPE_STRING, OFF_STR(rtsp_pass)       },
-    { "web_password",    TYPE_STRING, OFF_STR(web_password)    },
     { "onvif_enable",    TYPE_U8,     OFF_U8(onvif_enable)     },
     { "onvif_events",    TYPE_U8,     OFF_U8(onvif_events)     },
     { "csi_enabled",     TYPE_U8,     OFF_U8(csi_enabled)      },
@@ -353,27 +336,6 @@ static void migrate_lazy_legacy_keys(nvs_handle_t h)
 /*  Public API                                                         */
 /* ------------------------------------------------------------------ */
 
-/* 契约 v1.1 密码统一一次性种子：存量设备可能带未知历史密码，
- * NVS 标记 pw_seed_v1 保证仅升级后首启执行一次（与 seeed 同款） */
-static void password_seed_once(void)
-{
-    nvs_handle_t h;
-    uint8_t seeded = 0;
-    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
-        nvs_get_u8(h, KEY_PW_SEED, &seeded);
-        nvs_close(h);
-    }
-    if (seeded == 1) return;
-    ESP_LOGW(TAG, "One-shot password seed: unifying web_password to family default");
-    strlcpy(s_config.web_password, DEFAULT_WEB_PASSWORD, sizeof(s_config.web_password));
-    config_save();
-    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_u8(h, KEY_PW_SEED, 1);
-        nvs_commit(h);
-        nvs_close(h);
-    }
-}
-
 esp_err_t config_load(void)
 {
     /* Prevent double-init: re-entry would leak the config mutex */
@@ -454,7 +416,6 @@ esp_err_t config_load(void)
         s_config.xclk_freq_mhz = 16;
     }
 
-    password_seed_once();
     ESP_LOGI(TAG, "Config loaded from NVS (schema v%d)", CONFIG_SCHEMA_VERSION);
     s_config_loaded = true;
     return ESP_OK;
@@ -587,8 +548,6 @@ uint8_t     config_get_cam_quality(void)    { return s_config.cam_quality; }
 bool        config_get_ai_face_enable(void) { return s_config.ai_face_enable; }
 bool        config_get_ai_motion_enable(void) { return s_config.ai_motion_enable; }
 bool        config_get_ai_qr_enable(void)   { return s_config.ai_qr_enable; }
-const char *config_get_rtsp_user(void)      { return s_config.rtsp_user; }
-const char *config_get_rtsp_pass(void)      { return s_config.rtsp_pass; }
 bool        config_get_onvif_enable(void)   { return s_config.onvif_enable; }
 bool        config_get_onvif_events(void)   { return s_config.onvif_events; }
 bool        config_get_csi_enabled(void)    { return s_config.csi_enabled; }
@@ -605,7 +564,6 @@ int8_t config_get_cam_saturation(void) { return s_config.cam_saturation; }
 int8_t config_get_cam_sharpness(void)  { return s_config.cam_sharpness; }
 bool   config_get_cam_hmirror(void)    { return s_config.cam_hmirror; }
 bool   config_get_cam_vflip(void)      { return s_config.cam_vflip; }
-const char *config_get_web_password(void) { return s_config.web_password; }
 const char *config_get_device_name(void)  { return s_config.device_name; }
 const char *config_get_timezone(void)     { return s_config.timezone; }
 bool   config_get_allow_ap_fallback(void) { return s_config.allow_ap_fallback; }
@@ -651,15 +609,8 @@ cJSON *config_get_json(void)
     cJSON_AddBoolToObject(root, "ai_motion_en", s_config.ai_motion_enable);
     cJSON_AddBoolToObject(root, "ai_qr_en", s_config.ai_qr_enable);
 
-    /* RTSP / ONVIF */
-    cJSON_AddStringToObject(root, "rtsp_user", s_config.rtsp_user);
-    cJSON_AddStringToObject(root, "rtsp_pass",
-                            s_config.rtsp_pass[0] ? "****" : "");
+    /* ONVIF（契约 v2.0：RTSP 凭据键已随密码体系移除） */
     cJSON_AddBoolToObject(root, "onvif_enable", s_config.onvif_enable);
-
-    /* Web auth */
-    cJSON_AddStringToObject(root, "web_password",
-                            s_config.web_password[0] ? "****" : "");
 
     return root;
 }
