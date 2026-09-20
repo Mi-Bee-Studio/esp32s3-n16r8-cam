@@ -38,7 +38,7 @@
 /* n16r8 桥接（2026-09-06）：本板无 WS 服务，CSI 状态对外的唯一实时通道是
  * /api/status 的 csi 快照（契约 v1.6）；运动事件扇出到 ONVIF MotionAlarm。
  * 回调上下文=runtime loop 任务（即本模块的 pump 任务），满足 SDK 有界回调契约。 */
-#include "onvif_events.h"   /* 契约 v1.5：MotionAlarm 扇出（onvif_events 门控） */
+#include "onvif_c.h"   /* 契约 v1.5：MotionAlarm 扇出（onvif_events 门控） */
 
 static const char *TAG = "csi_motion";
 
@@ -199,7 +199,7 @@ public:
                  (int)s.link_rssi_dbm, (unsigned)s.link_channel);
         /* 契约 v1.5：状态转移扇出到 ONVIF MotionAlarm（NVR 联动）；
          * 本板无 WS，运动事件不进 ws 通道（SPA 经 /api/status 轮询感知状态） */
-        onvif_events_motion(s.motion_state == espectre::MotionState::MOTION,
+        onvif_c_motion(s.motion_state == espectre::MotionState::MOTION,
                             (uint8_t)(s.movement_metric * 100.0f + 0.5f));
     }
 

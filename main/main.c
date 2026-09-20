@@ -43,7 +43,7 @@
 #include "rtsp_server.h"
 #include "frame_broadcaster.h"
 #include "ai_pipeline.h"
-#include "onvif_discovery.h"
+#include "onvif_port.h"
 #include "at_command.h"
 #include "ota_updater.h"
 #include "flash_led.h"
@@ -301,7 +301,7 @@ void app_main(void)
 
     /* ---- 7. ONVIF discovery + SOAP service --------------------------- */
     {
-        esp_err_t onvif_err = onvif_start();
+        esp_err_t onvif_err = onvif_port_start();
         if (onvif_err == ESP_OK) {
             ESP_LOGI(TAG, "ONVIF service started (WS-Discovery + mDNS)");
         } else {
