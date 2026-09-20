@@ -320,14 +320,32 @@ static esp_err_t static_file_handler(httpd_req_t *req)
     FILE *f = fopen(filepath, "r");
     if (!f) {
         /* 404 带来源对端（issue ai#8：设备侧只记 404 不记 URI/IP，NVR 排障
-         * 无法对表）——仅记录，不改变响应语义 */
-        char peer[16] = "?";
+         * 无法对表）——仅记录，不改变响应语义。
+         * 根因修正（2026-09-20 实测 .134）：IDF v6 httpd 会话是 IPv6 双栈
+         * socket，IPv4 对端以 v4-mapped 返回（fam=AF_INET6）——按
+         * sockaddr_in 解析必得 0.0.0.0。必须 sockaddr_storage 判族。 */
+        char peer[INET6_ADDRSTRLEN] = "?";
         int fd = httpd_req_to_sockfd(req);
         if (fd >= 0) {
-            struct sockaddr_in sa;
-            socklen_t sl = sizeof(sa);
-            if (lwip_getpeername(fd, (struct sockaddr *)&sa, &sl) == 0) {
-                strlcpy(peer, inet_ntoa(sa.sin_addr), sizeof(peer));
+            struct sockaddr_storage ss;
+            socklen_t sl = sizeof(ss);
+            const void *addr = NULL;
+            if (lwip_getpeername(fd, (struct sockaddr *)&ss, &sl) == 0) {
+                if (ss.ss_family == AF_INET) {
+                    addr = &((struct sockaddr_in *)&ss)->sin_addr;
+                } else if (ss.ss_family == AF_INET6) {
+                    addr = &((struct sockaddr_in6 *)&ss)->sin6_addr;
+                }
+            }
+            if (addr) {
+                char abuf[INET6_ADDRSTRLEN];
+                if (inet_ntop(ss.ss_family, addr, abuf, sizeof(abuf)) != NULL) {
+                    const char *p = abuf;
+                    if (strncasecmp(p, "::ffff:", 7) == 0) {
+                        p += 7;   /* IPv4-mapped → 报 IPv4 文本 */
+                    }
+                    strlcpy(peer, p, sizeof(peer));
+                }
             }
         }
         ESP_LOGW(TAG, "404 %s from %s", uri, peer);
