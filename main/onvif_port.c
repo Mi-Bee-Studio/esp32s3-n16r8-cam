@@ -20,6 +20,7 @@
 #include "esp_mac.h"
 #include "esp_http_server.h"
 #include "web_server.h"
+#include "ota_updater.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -66,7 +67,7 @@ esp_err_t onvif_port_start(void)
 
     uint8_t mac[6] = {0};
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
-    char hostname[32];
+    static char hostname[32];   /* cfg 浅拷贝持有指针，须与 cfg 同寿 */
     snprintf(hostname, sizeof(hostname), "mibeecam-%02x%02x",
              mac[4], mac[5]);
 
@@ -74,7 +75,7 @@ esp_err_t onvif_port_start(void)
         .manufacturer     = "MiBee",
         .model            = "MiBeeCam",
         .hardware_id      = "ESP32-S3-N16R8",
-        .firmware_version = "v0.1.0",
+        .firmware_version = FW_VERSION,   /* 唯一版本源：ota_updater.h */
         .serial           = port_serial,
         .uuid             = port_uuid,
         .ip               = port_ip,
