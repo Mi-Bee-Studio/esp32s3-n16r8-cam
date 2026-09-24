@@ -29,6 +29,7 @@
  */
 
 #include "web_server.h"
+#include "watchdog.h"
 #include "mjpeg_streamer.h"
 #include "esp_http_server.h"
 #include "lwip/sockets.h"   /* TCP_NODELAY/KEEPALIVE sockopts（PIT-018 教训：WIP 漏 include，2026-09-04 补） */
@@ -413,6 +414,7 @@ static esp_err_t api_status_handler(httpd_req_t *req)
 
     /* System */
     cJSON_AddStringToObject(data, "firmware_version", FW_VERSION);
+    watchdog_attach_status(data);
     cJSON_AddNumberToObject(data, "free_heap",
         (double)esp_get_free_heap_size());
     cJSON_AddNumberToObject(data, "min_heap",
@@ -924,7 +926,7 @@ static esp_err_t api_capabilities_handler(httpd_req_t *req)
     }
     
     /* 契约 v1.0：12 个布尔能力位 + api_version/wifi_scan（见 docs/api-contract.md） */
-    cJSON_AddStringToObject(data, "api_version", "1.9");
+    cJSON_AddStringToObject(data, "api_version", "1.10");
     cJSON_AddBoolToObject(data, "wifi_scan", true);
     cJSON_AddBoolToObject(data, "ai",        true);   /* Has AI pipeline */
     cJSON_AddBoolToObject(data, "sd",        false);  /* No SD card */
