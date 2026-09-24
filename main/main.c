@@ -33,6 +33,7 @@
 #include "driver/gpio.h"
 #include "camera_driver.h"
 #include "config_manager.h"
+#include "watchdog.h"
 #include "wifi_manager.h"
 #include "time_sync.h"
 #include "csi_motion.h"
@@ -147,6 +148,7 @@ static void heap_diag_dump(int seq) { (void)seq; }
 
 void app_main(void)
 {
+    watchdog_init();
     ESP_LOGI(TAG, "MiBee Cam v0.1 starting...");
     ESP_LOGI(TAG, "Free heap: %lu  Free PSRAM: %lu",
              (unsigned long)esp_get_free_heap_size(),

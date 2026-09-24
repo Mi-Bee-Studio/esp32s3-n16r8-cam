@@ -21,6 +21,7 @@
  *    字段恒 0。
  */
 #include "wifi_channel_health.h"
+#include "watchdog.h"
 
 #include <string.h>
 #include <time.h>
@@ -139,11 +140,8 @@ static void chan_health_task(void *unused)
 {
     (void)unused;
     int64_t next_sample_us = 0;
-    if (esp_task_wdt_add(NULL) != ESP_OK) {
-        ESP_LOGW(TAG, "task wdt subscribe failed — wedge net INACTIVE");
-    }
-    while (true) {
-        esp_task_wdt_reset();   /* 楔死诊断网：5s 节拍 + ~2s 扫描 < 10s TWDT */
+    watchdog_register_current("wifi_ch_h");
+    while (true) {    watchdog_feed_current(); /* 楔死诊断网：停喂即 TWDT */
         const int64_t now_us = esp_timer_get_time();
         disc_advance(now_us);
 

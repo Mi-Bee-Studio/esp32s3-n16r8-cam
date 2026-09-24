@@ -30,6 +30,7 @@ CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
 # Watchdog
 CONFIG_ESP_TASK_WDT=y
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
+CONFIG_ESP_TASK_WDT_PANIC=y
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
 # CPU1=OFF：AI 任务常驻 core 1，运行期 esp_task_wdt_delete(IDLE1) 只删订阅条目
 # 不注销空闲钩子 → IDLE1 每轮空转调 esp_task_wdt_reset 刷 "task not found" 洪水

@@ -25,6 +25,7 @@
  */
 
 #include "frame_broadcaster.h"
+#include "watchdog.h"
 #include "camera_driver.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
@@ -135,11 +136,13 @@ static void broadcaster_task(void *arg)
     (void)arg;
 
     ESP_LOGI(TAG, "Broadcaster task started");
+    watchdog_register_current("bcast");
     s_last_fps_log_ms = 0;
     s_frame_count = 0;
 
     while (s_running) {
         camera_fb_t *fb = esp_camera_fb_get();
+        watchdog_feed_current();
         if (fb) {
             publish_frame(fb->buf, fb->len);
             esp_camera_fb_return(fb);
