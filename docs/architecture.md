@@ -10,7 +10,7 @@
 | frame_broadcaster | frame_broadcaster.c/h | Frame grab task on Core 1 → subscriber publish pattern | esp_camera, mjpeg_streamer, ai_pipeline |
 | mjpeg_streamer | mjpeg_streamer.c/h | HTTP MJPEG streaming via chunked multipart | frame_broadcaster |
 | ai_pipeline | ai_pipeline.cpp/h | Face detection + motion detection + QR decode on Core 1, 640×480 hardcoded buffers | esp-dl, quirc, frame_broadcaster |
-| web_server | web_server.c/h | REST API (7 endpoint groups) + SPIFFS static file serving | esp_http_server, config_manager, flash_led, ai_pipeline |
+| web_server | web_server.c/h（路由表+生命周期）+ web_api_{system,config,camera,ai}.c + web_server_{util,static}.c | REST API (7 endpoint groups) + SPIFFS static file serving（issue #19 按域拆分） | esp_http_server, config_manager, flash_led, ai_pipeline |
 | web_ui | index.html, style.css, app.js, i18n.js | Browser-based web interface | web_server (via SPIFFS) |
 | wifi_manager | wifi_manager.c/h | WiFi STA mode connection | esp_wifi |
 | flash_led | flash_led.c/h | GPIO flash LED control via LED strip driver | esp_driver_gpio |
